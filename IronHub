@@ -45,6 +45,8 @@ local FarmPosition = "Above"
 local NormalDistance = 10
 local BossDistance = 15
 local VerticalDistance = 10
+local OrbitSpeed = 3
+local OrbitAngle = 0
 
 local Priority = {
     [1] = "Boss",
@@ -60,24 +62,24 @@ local VerticalDodgeDistance = 20
 local DodgeMode = "Up + Away"
 local DodgeWait = 1.5
 local IsDodging = false
+local IsInteractingWithEgg = false
 
 -- MISC STATES
 local InfZoomEnabled = false
 local AntiVoidEnabled = false
 local LowVFXEnabled = false
 local UltraLowVFXEnabled = false
-local OrbitAngle = 0
 
 ----------------------------------------------------
 -- HELPER FUNCTIONS: TARGET DISCOVERY & DETECT
 ----------------------------------------------------
 
--- FIX 2: Universal Part Locking (Works with GUID Model names, Torso, HRP, BaseParts)
 local function getTargetPart(target)
     if not target then return nil end
     if target:IsA("Model") then
         return target.PrimaryPart 
             or target:FindFirstChild("HumanoidRootPart") 
+            or target:FindFirstChild("Root")
             or target:FindFirstChild("Torso") 
             or target:FindFirstChild("UpperTorso") 
             or target:FindFirstChildWhichIsA("BasePart", true)
@@ -117,7 +119,6 @@ local function isBoss(npc)
     return false
 end
 
--- FIX 2: Dynamic Enemy Folder & GUID Model Scanner
 local function getEnemies()
     local bosses, normals = {}, {}
     local enemyFolder = workspace:FindFirstChild("EnemyNpc") 
@@ -179,7 +180,7 @@ local function getTreasureChests()
     return chests
 end
 
--- Priority Evaluation (Requires AutoFarmDungeon to be active)
+-- Priority Evaluation
 local function getTargetByPriority()
     if not AutoFarmDungeon then 
         return nil, nil 
@@ -211,6 +212,32 @@ local function checkForIncomingSkill(target)
         return true
     end
     return false
+end
+
+-- Dragon Egg Proximity Prompt Handler (Hold F keybind / Trigger)
+local function handleEggInteraction(eggTarget)
+    if not eggTarget or IsInteractingWithEgg then return end
+
+    local prompt = eggTarget:FindFirstChild("Interact_ProximityPrompt", true) 
+        or eggTarget:FindFirstChildWhichIsA("ProximityPrompt", true)
+
+    if prompt and prompt.Enabled then
+        IsInteractingWithEgg = true
+        
+        -- Fire prompt natively if executor supports it
+        if fireproximityprompt then
+            fireproximityprompt(prompt)
+            task.wait(0.2)
+        else
+            -- Hold F key simulation based on prompt duration
+            local holdDuration = (prompt.HoldDuration > 0) and prompt.HoldDuration or 0.5
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+            task.wait(holdDuration + 0.1)
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+        end
+        
+        IsInteractingWithEgg = false
+    end
 end
 
 ----------------------------------------------------
@@ -307,7 +334,6 @@ FarmTab:CreateToggle({
     Callback = function(Value) AutoSkillE = Value end,
 })
 
--- FIX 3: Correct Variable Assignment for AutoSkillR
 FarmTab:CreateToggle({
     Name = "Auto Skill [ R ]",
     CurrentValue = false,
@@ -315,7 +341,6 @@ FarmTab:CreateToggle({
     Callback = function(Value) AutoSkillR = Value end,
 })
 
--- Update: Skill Keyboard Bind set to C
 FarmTab:CreateToggle({
     Name = "Auto Skill [ C ]",
     CurrentValue = false,
@@ -341,6 +366,16 @@ FarmTab:CreateDropdown({
     Callback = function(Option)
         FarmPosition = typeof(Option) == "table" and Option[1] or Option
     end,
+})
+
+FarmTab:CreateSlider({
+    Name = "Orbit Speed",
+    Range = {1, 20},
+    Increment = 1,
+    Suffix = "speed",
+    CurrentValue = 3,
+    Flag = "OrbitSpeedSlider",
+    Callback = function(Value) OrbitSpeed = Value end,
 })
 
 FarmTab:CreateSlider({
@@ -525,11 +560,11 @@ MiscTab:CreateToggle({
 -- COMBAT LOOPS (M1 & SKILLS Q, E, R, C)
 ----------------------------------------------------
 
--- Auto M1 Loop (Requires AutoFarmDungeon to be true)
+-- Auto M1 Loop
 task.spawn(function()
     while true do
         if AutoFarmDungeon and AutoM1 then
-            local target = getTargetByPriority()
+            local target, targetType = getTargetByPriority()
             if target and not IsDodging then
                 VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
                 task.wait(0.01)
@@ -605,6 +640,13 @@ task.spawn(function()
                     local targetPart = getTargetPart(target)
 
                     if targetPart then
+                        -- Handle Dragon Egg Interaction (Hold F Prompt)
+                        if targetType == "Egg" then
+                            task.spawn(function()
+                                handleEggInteraction(target)
+                            end)
+                        end
+
                         -- Skill Velocity Auto Dodge Check
                         if checkForIncomingSkill(target) then
                             IsDodging = true
@@ -629,7 +671,7 @@ task.spawn(function()
                             local finalCFrame
 
                             if FarmPosition == "Orbit" then
-                                OrbitAngle = (OrbitAngle + 3) % 360
+                                OrbitAngle = (OrbitAngle + OrbitSpeed) % 360
                                 local rad = math.rad(OrbitAngle)
                                 local offset = Vector3.new(math.cos(rad) * hDist, VerticalDistance, math.sin(rad) * hDist)
                                 finalCFrame = CFrame.new(targetCFrame.Position + offset, targetCFrame.Position)
@@ -639,7 +681,7 @@ task.spawn(function()
                                 finalCFrame = CFrame.new(targetCFrame.Position - Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
                             end
 
-                            -- FIX 4: Physics Engine Resistance Fix (Zero linear & angular momentum)
+                            -- Freeze velocities to prevent physics pushback
                             hrp.AssemblyLinearVelocity = Vector3.zero
                             hrp.AssemblyAngularVelocity = Vector3.zero
                             hrp.CFrame = finalCFrame
