@@ -30,10 +30,11 @@ local AutoDragonEgg = false
 local AutoTreasureChest = false
 local AutoNextRound = false
 
--- PROGRESSION & RANGE
+-- PROGRESSION, RANGE & TIMERS
 local TargetDetectionRange = 5000
 local CurrentLocationIndex = 1
 local LastRoomTPTime = 0
+local NoEnemyTimer = 0 -- 2-second timer trigger before auto next room
 
 -- COMBAT & SKILL STATES
 local AutoM1 = false
@@ -123,6 +124,19 @@ local function isBoss(npc)
     return false
 end
 
+-- DIRECT SCANNER FOR WORKSPACE.ENEMYNPC
+local function scanDirectEnemyNpc()
+    local enemyFolder = workspace:FindFirstChild("EnemyNpc")
+    if enemyFolder then
+        for _, npc in ipairs(enemyFolder:GetChildren()) do
+            if isAlive(npc) then
+                return npc
+            end
+        end
+    end
+    return nil
+end
+
 local function getEnemies()
     local bosses, normals = {}, {}
     local enemyFolder = workspace:FindFirstChild("EnemyNpc") 
@@ -184,7 +198,7 @@ local function getTreasureChests()
     return chests
 end
 
--- PRIORITY LOCK-ON WITHIN DETECTION RANGE (5,000 STUDS DEFAULT)
+-- PRIORITY LOCK-ON WITHIN DETECTION RANGE
 local function getTargetByPriority()
     if not AutoFarmDungeon then 
         return nil, nil 
@@ -270,7 +284,7 @@ local function handlePromptInteraction(target)
 end
 
 ----------------------------------------------------
--- HELPER FUNCTIONS: PROGRESSION & BACKUP PORTALS
+-- HELPER FUNCTIONS: PROGRESSION & WORKSPACE.ROUNDDOOR
 ----------------------------------------------------
 
 local function getProgressionLocations()
@@ -288,29 +302,39 @@ local function getProgressionLocations()
         end
     end
 
-    -- 2. Backup Doors: workspace.RoundDoor:GetChildren()
+    -- 2. Scan workspace.RoundDoor Children
     local roundDoor = workspace:FindFirstChild("RoundDoor")
     if roundDoor then
-        for _, child in ipairs(roundDoor:GetChildren()) do
-            if child.Name ~= "Portal" then
-                local root = child:FindFirstChild("Root") or (child:IsA("BasePart") and child)
-                if root then
-                    table.insert(locations, root)
+        local doorChildren = roundDoor:GetChildren()
+
+        -- Scan through standard door children
+        for index, child in ipairs(doorChildren) do
+            if index ~= 13 and child.Name ~= "Portal" then
+                local root = child:FindFirstChild("Root")
+                local targetPart = root and (root:FindFirstChild("Safe") or root) or (child:IsA("BasePart") and child)
+                if targetPart then
+                    table.insert(locations, targetPart)
                 end
             end
         end
 
-        -- 3. Final Backup Portals: workspace.RoundDoor.Portal.Root.Safe
+        -- 3. Specific Last Option: workspace.RoundDoor:GetChildren()[13].Root.Safe
+        if doorChildren[13] then
+            local child13 = doorChildren[13]
+            local root13 = child13:FindFirstChild("Root")
+            if root13 then
+                local safe13 = root13:FindFirstChild("Safe") or root13
+                table.insert(locations, safe13)
+            end
+        end
+
+        -- Final Portal Safety Net
         local portal = roundDoor:FindFirstChild("Portal")
         if portal then
             local portalRoot = portal:FindFirstChild("Root")
             if portalRoot then
-                local safePart = portalRoot:FindFirstChild("Safe") or (portalRoot:IsA("BasePart") and portalRoot)
-                if safePart then
-                    table.insert(locations, safePart)
-                else
-                    table.insert(locations, portalRoot)
-                end
+                local safePart = portalRoot:FindFirstChild("Safe") or portalRoot
+                table.insert(locations, safePart)
             end
         end
     end
@@ -645,14 +669,19 @@ MiscTab:CreateToggle({
 })
 
 ----------------------------------------------------
--- COMBAT LOOPS (M1 & SKILLS NUKING ALL TARGET TYPES)
+-- COMBAT LOOPS
 ----------------------------------------------------
 
--- Auto M1 Loop (Nukes Bosses, Normals, Eggs & Chests)
+-- Auto M1 Loop
 task.spawn(function()
     while true do
         if AutoFarmDungeon and AutoM1 then
             local target, targetType = getTargetByPriority()
+            if not target then
+                local directEnemy = scanDirectEnemyNpc()
+                if directEnemy then target = directEnemy end
+            end
+
             if target and not IsDodging then
                 VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
                 task.wait(0.01)
@@ -663,11 +692,16 @@ task.spawn(function()
     end
 end)
 
--- Auto Skill Loop (Skills: Q, E, R, C)
+-- Auto Skill Loop
 task.spawn(function()
     while true do
         if AutoFarmDungeon then
             local target, targetType = getTargetByPriority()
+            if not target then
+                local directEnemy = scanDirectEnemyNpc()
+                if directEnemy then target = directEnemy end
+            end
+
             if target and not IsDodging then
                 local skillsToCast = {
                     {Key = Enum.KeyCode.Q, Enabled = AutoSkillQ},
@@ -699,7 +733,7 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------
--- MAIN AUTOFARM, LOCK-ON & BACKUP PROGRESSION LOOP
+-- MAIN AUTOFARM & WORKSPACE.ROUNDDOOR PROGRESSION LOOP
 ----------------------------------------------------
 
 task.spawn(function()
@@ -721,76 +755,96 @@ task.spawn(function()
             end
 
             if AutoFarmDungeon then
-                -- Target Search (Scans 5000 studs range across entire workspace)
+                -- 1. Scan Priority Targets within range (5,000 studs)
                 local target, targetType = getTargetByPriority()
 
-                if target and not IsDodging then
-                    local targetPart = getTargetPart(target)
+                -- 2. Direct Backup Scan: workspace.EnemyNpc if priority target returned nil
+                if not target then
+                    local directEnemy = scanDirectEnemyNpc()
+                    if directEnemy then
+                        target = directEnemy
+                        targetType = isBoss(directEnemy) and "Boss" or "Normal"
+                    end
+                end
 
-                    if targetPart then
-                        -- 1. Orbit & Position locking to target
-                        local hDist = (targetType == "Boss") and BossDistance or NormalDistance
-                        local targetCFrame = targetPart.CFrame
-                        local finalCFrame
+                if target then
+                    -- Reset 2-second no enemy timer since an enemy/target is active
+                    NoEnemyTimer = 0
 
-                        if FarmPosition == "Orbit" then
-                            OrbitAngle = (OrbitAngle + OrbitSpeed) % 360
-                            local rad = math.rad(OrbitAngle)
-                            local offset = Vector3.new(math.cos(rad) * hDist, VerticalDistance, math.sin(rad) * hDist)
-                            finalCFrame = CFrame.new(targetCFrame.Position + offset, targetCFrame.Position)
-                        elseif FarmPosition == "Above" then
-                            finalCFrame = CFrame.new(targetCFrame.Position + Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
-                        elseif FarmPosition == "Under" then
-                            finalCFrame = CFrame.new(targetCFrame.Position - Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
-                        end
+                    if not IsDodging then
+                        local targetPart = getTargetPart(target)
 
-                        -- Instant Dodge check
-                        if checkForIncomingSkill(target) then
-                            IsDodging = true
-                            task.spawn(function()
-                                local dodgeOffset = Vector3.zero
-                                if DodgeMode == "Up" then
-                                    dodgeOffset = Vector3.new(0, VerticalDodgeDistance, 0)
-                                elseif DodgeMode == "Away" then
-                                    dodgeOffset = (hrp.CFrame.LookVector * -AutoDodgeDistance)
-                                elseif DodgeMode == "Up + Away" then
-                                    dodgeOffset = (hrp.CFrame.LookVector * -AutoDodgeDistance) + Vector3.new(0, VerticalDodgeDistance, 0)
+                        if targetPart then
+                            local hDist = (targetType == "Boss") and BossDistance or NormalDistance
+                            local targetCFrame = targetPart.CFrame
+                            local finalCFrame
+
+                            if FarmPosition == "Orbit" then
+                                OrbitAngle = (OrbitAngle + OrbitSpeed) % 360
+                                local rad = math.rad(OrbitAngle)
+                                local offset = Vector3.new(math.cos(rad) * hDist, VerticalDistance, math.sin(rad) * hDist)
+                                finalCFrame = CFrame.new(targetCFrame.Position + offset, targetCFrame.Position)
+                            elseif FarmPosition == "Above" then
+                                finalCFrame = CFrame.new(targetCFrame.Position + Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
+                            elseif FarmPosition == "Under" then
+                                finalCFrame = CFrame.new(targetCFrame.Position - Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
+                            end
+
+                            -- Dodge check
+                            if checkForIncomingSkill(target) then
+                                IsDodging = true
+                                task.spawn(function()
+                                    local dodgeOffset = Vector3.zero
+                                    if DodgeMode == "Up" then
+                                        dodgeOffset = Vector3.new(0, VerticalDodgeDistance, 0)
+                                    elseif DodgeMode == "Away" then
+                                        dodgeOffset = (hrp.CFrame.LookVector * -AutoDodgeDistance)
+                                    elseif DodgeMode == "Up + Away" then
+                                        dodgeOffset = (hrp.CFrame.LookVector * -AutoDodgeDistance) + Vector3.new(0, VerticalDodgeDistance, 0)
+                                    end
+
+                                    hrp.CFrame = hrp.CFrame + dodgeOffset
+                                    task.wait(DodgeWait)
+                                    IsDodging = false
+                                end)
+                            else
+                                hrp.AssemblyLinearVelocity = Vector3.zero
+                                hrp.AssemblyAngularVelocity = Vector3.zero
+                                hrp.CFrame = finalCFrame
+
+                                if targetType == "Egg" or targetType == "Chest" then
+                                    handlePromptInteraction(target)
                                 end
-
-                                hrp.CFrame = hrp.CFrame + dodgeOffset
-                                task.wait(DodgeWait)
-                                IsDodging = false
-                            end)
-                        else
-                            -- Apply movement
-                            hrp.AssemblyLinearVelocity = Vector3.zero
-                            hrp.AssemblyAngularVelocity = Vector3.zero
-                            hrp.CFrame = finalCFrame
-
-                            -- 2. Activate Egg / Chest Proximity Prompt while orbiting/nuking
-                            if targetType == "Egg" or targetType == "Chest" then
-                                handlePromptInteraction(target)
                             end
                         end
                     end
-                elseif AutoNextRound and not IsDodging then
-                    -- ONLY runs when NO targets are detected within range
-                    if tick() - LastRoomTPTime > 1.5 then
-                        local locations = getProgressionLocations()
+                else
+                    -- 3. No enemies found anywhere in workspace.EnemyNpc
+                    if NoEnemyTimer == 0 then
+                        NoEnemyTimer = tick()
+                    end
 
-                        if #locations > 0 then
-                            CurrentLocationIndex = (CurrentLocationIndex % #locations) + 1
-                            local targetLocation = locations[CurrentLocationIndex]
+                    -- Wait 2 full seconds of no enemies before triggering Auto Next Room
+                    if AutoNextRound and not IsDodging and (tick() - NoEnemyTimer >= 2) then
+                        if tick() - LastRoomTPTime > 1.5 then
+                            local locations = getProgressionLocations()
 
-                            if targetLocation then
-                                hrp.AssemblyLinearVelocity = Vector3.zero
-                                hrp.AssemblyAngularVelocity = Vector3.zero
-                                hrp.CFrame = targetLocation.CFrame * CFrame.new(0, 3, 0)
-                                LastRoomTPTime = tick()
+                            if #locations > 0 then
+                                CurrentLocationIndex = (CurrentLocationIndex % #locations) + 1
+                                local targetLocation = locations[CurrentLocationIndex]
+
+                                if targetLocation then
+                                    hrp.AssemblyLinearVelocity = Vector3.zero
+                                    hrp.AssemblyAngularVelocity = Vector3.zero
+                                    hrp.CFrame = targetLocation.CFrame * CFrame.new(0, 3, 0)
+                                    LastRoomTPTime = tick()
+                                end
                             end
                         end
                     end
                 end
+            else
+                NoEnemyTimer = 0
             end
         end
     end
