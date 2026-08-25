@@ -1,7 +1,7 @@
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Players = game:GetService("Players")
-local VirtualInputManager = game:GetService("VirtualInputManager")
 local Lighting = game:GetService("Lighting")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 local LocalPlayer = Players.LocalPlayer
 
 ----------------------------------------------------
@@ -10,7 +10,7 @@ local LocalPlayer = Players.LocalPlayer
 local Window = Rayfield:CreateWindow({
     Name = "Dungeon Autofarm Hub",
     LoadingTitle = "Dungeon Script",
-    LoadingSubtitle = "Auto Farm & Dodge Utility",
+    LoadingSubtitle = "Auto Farm & Combat Utility",
     ConfigurationSaving = {
         Enabled = true,
         FolderName = "DungeonFarmConfig",
@@ -29,9 +29,18 @@ local AutoFarmDungeon = false
 local AutoDragonEgg = false
 local AutoTreasureChest = false
 local AutoNextRound = false
-local AutoM1 = false
-local AutoSkill = false
 
+-- COMBAT & SKILL STATES
+local AutoM1 = false
+local AutoM1Delay = 0.1
+
+local AutoSkillQ = false
+local AutoSkillE = false
+local AutoSkillR = false
+local AutoSkillG = false
+local AutoSwitchWeapon = false
+
+-- POSITION & DISTANCE
 local FarmPosition = "Above"
 local NormalDistance = 10
 local BossDistance = 15
@@ -44,6 +53,7 @@ local Priority = {
     [4] = "Treasure Chest"
 }
 
+-- DODGE STATES
 local AutoDodge = false
 local AutoDodgeDistance = 25
 local VerticalDodgeDistance = 20
@@ -51,58 +61,12 @@ local DodgeMode = "Up + Away"
 local DodgeWait = 1.5
 local IsDodging = false
 
+-- MISC STATES
 local InfZoomEnabled = false
 local AntiVoidEnabled = false
 local LowVFXEnabled = false
 local UltraLowVFXEnabled = false
-
 local OrbitAngle = 0
-
-----------------------------------------------------
--- CONTROLLER HOOK ENGINE
-----------------------------------------------------
-
-local CachedController = nil
-
-local function getController()
-    if CachedController and type(CachedController) == "table" and rawget(CachedController, "SetInputDirection") then
-        return CachedController
-    end
-
-    if getgc then
-        for _, obj in ipairs(getgc(true)) do
-            if type(obj) == "table" and rawget(obj, "SetInputDirection") and rawget(obj, "HasBaseAttackStage") then
-                CachedController = obj
-                return obj
-            end
-        end
-    end
-    return nil
-end
-
-local function executeAction(actionName)
-    local controller = getController()
-    if controller then
-        if rawget(controller, "PerformAction") or controller.PerformAction then
-            pcall(function()
-                controller:PerformAction(actionName)
-            end)
-            return true
-        end
-    end
-
-    -- Fallback via direct Action Module execution
-    local char = LocalPlayer.Character
-    local actionScript = char and char:FindFirstChild("LocalControlMgr", true) and char.LocalControlMgr:FindFirstChild("Action") and char.LocalControlMgr.Action:FindFirstChild(actionName)
-    if actionScript and actionScript:IsA("ModuleScript") then
-        local success, mod = pcall(require, actionScript)
-        if success and type(mod) == "table" and mod.Perform then
-            pcall(function() mod.Perform(controller or {}) end)
-            return true
-        end
-    end
-    return false
-end
 
 ----------------------------------------------------
 -- HELPER FUNCTIONS: ENEMY & TARGET DETECTION
@@ -231,10 +195,35 @@ local function checkForIncomingSkill(target)
 end
 
 ----------------------------------------------------
+-- HELPER FUNCTIONS: WEAPON SWITCHING
+----------------------------------------------------
+
+local function switchToNextWeapon()
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+    if backpack and hum then
+        local tools = backpack:GetChildren()
+        local validTools = {}
+
+        for _, item in ipairs(tools) do
+            if item:IsA("Tool") then
+                table.insert(validTools, item)
+            end
+        end
+
+        if #validTools > 0 then
+            hum:EquipTool(validTools[1])
+        end
+    end
+end
+
+----------------------------------------------------
 -- FARMING TAB UI LOGIC
 ----------------------------------------------------
 
-FarmTab:CreateSection("Autofarm Toggles")
+FarmTab:CreateSection("Autofarm Targets")
 
 FarmTab:CreateToggle({
     Name = "Autofarm Dungeon",
@@ -264,26 +253,60 @@ FarmTab:CreateToggle({
     Callback = function(Value) AutoNextRound = Value end,
 })
 
+FarmTab:CreateSection("Auto M1 Combat")
+
 FarmTab:CreateToggle({
     Name = "Auto M1",
     CurrentValue = false,
     Flag = "AutoM1Toggle",
-    Callback = function(Value) 
-        AutoM1 = Value 
-        if not Value then
-            local controller = getController()
-            if controller then
-                controller.HoldingBaseAttack = false
-            end
-        end
-    end,
+    Callback = function(Value) AutoM1 = Value end,
+})
+
+FarmTab:CreateSlider({
+    Name = "Auto M1 Delay",
+    Range = {0.01, 10},
+    Increment = 0.01,
+    Suffix = "sec",
+    CurrentValue = 0.1,
+    Flag = "AutoM1DelaySlider",
+    Callback = function(Value) AutoM1Delay = Value end,
+})
+
+FarmTab:CreateSection("Auto Skill & Weapon Switch")
+
+FarmTab:CreateToggle({
+    Name = "Auto Skill [ Q ]",
+    CurrentValue = false,
+    Flag = "AutoSkillQToggle",
+    Callback = function(Value) AutoSkillQ = Value end,
 })
 
 FarmTab:CreateToggle({
-    Name = "Auto Skill",
+    Name = "Auto Skill [ E ]",
     CurrentValue = false,
-    Flag = "AutoSkillToggle",
-    Callback = function(Value) AutoSkill = Value end,
+    Flag = "AutoSkillEToggle",
+    Callback = function(Value) AutoSkillE = Value end,
+})
+
+FarmTab:CreateToggle({
+    Name = "Auto Skill [ R ]",
+    CurrentValue = false,
+    Flag = "AutoSkillRToggle",
+    Callback = function(Value) AutoSkillR = Value end,
+})
+
+FarmTab:CreateToggle({
+    Name = "Auto Skill [ G ]",
+    CurrentValue = false,
+    Flag = "AutoSkillGToggle",
+    Callback = function(Value) AutoSkillG = Value end,
+})
+
+FarmTab:CreateToggle({
+    Name = "Auto Switch Weapon",
+    CurrentValue = false,
+    Flag = "AutoSwitchWeaponToggle",
+    Callback = function(Value) AutoSwitchWeapon = Value end,
 })
 
 FarmTab:CreateSection("Position & Distance Settings")
@@ -478,51 +501,60 @@ MiscTab:CreateToggle({
 })
 
 ----------------------------------------------------
--- AUTO M1 & AUTO SKILL LOOPS
+-- ASYNCHRONOUS COMBAT LOOPS
 ----------------------------------------------------
 
--- Auto M1 Loop
+-- Auto M1 Loop (Method A with Delay Slider)
 task.spawn(function()
     while true do
-        task.wait(0.1)
         if AutoM1 then
             local target = getTargetByPriority()
-            if target then
-                local controller = getController()
-                if controller then
-                    controller.HoldingBaseAttack = true
-                end
-                local success = executeAction("BaseAttack")
-                if not success then
-                    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-                    task.wait(0.02)
-                    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
-                end
+            if target and not IsDodging then
+                VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+                task.wait(0.01)
+                VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
             end
         end
+        task.wait(AutoM1Delay)
     end
 end)
 
--- Auto Skill Loop
+-- Auto Skill & Weapon Switch Loop
 task.spawn(function()
-    local skills = {"Skill1", "Skill2", "SkillAW", "SkillU"}
     while true do
-        task.wait(0.2)
-        if AutoSkill then
-            local target = getTargetByPriority()
-            if target then
-                for _, skillName in ipairs(skills) do
-                    if not AutoSkill then break end
-                    executeAction(skillName)
+        local target = getTargetByPriority()
+        if target and not IsDodging then
+            local skillsToCast = {
+                {Key = Enum.KeyCode.Q, Enabled = AutoSkillQ},
+                {Key = Enum.KeyCode.E, Enabled = AutoSkillE},
+                {Key = Enum.KeyCode.R, Enabled = AutoSkillR},
+                {Key = Enum.KeyCode.G, Enabled = AutoSkillG},
+            }
+
+            local usedAnySkill = false
+
+            for _, skill in ipairs(skillsToCast) do
+                if skill.Enabled and not IsDodging then
+                    VirtualInputManager:SendKeyEvent(true, skill.Key, false, game)
+                    task.wait(0.05)
+                    VirtualInputManager:SendKeyEvent(false, skill.Key, false, game)
                     task.wait(0.15)
+                    usedAnySkill = true
                 end
             end
+
+            -- Switch weapon after completing the active skill sequence
+            if usedAnySkill and AutoSwitchWeapon then
+                switchToNextWeapon()
+                task.wait(0.3)
+            end
         end
+        task.wait(0.2)
     end
 end)
 
 ----------------------------------------------------
--- MAIN AUTOFARM LOOP
+-- MAIN AUTOFARM & POSITIONING LOOP
 ----------------------------------------------------
 
 task.spawn(function()
