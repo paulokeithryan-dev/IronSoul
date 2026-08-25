@@ -5,7 +5,7 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local LocalPlayer = Players.LocalPlayer
 
 ----------------------------------------------------
--- WINDOW & CONFIGURATION (AUTO-SAVE ENABLED)
+-- WINDOW & CONFIGURATION (RAYFIELD AUTO-SAVE ENABLED)
 ----------------------------------------------------
 local Window = Rayfield:CreateWindow({
     Name = "Dungeon Autofarm Hub",
@@ -33,7 +33,7 @@ local AutoNextRound = false
 -- ROUND PROGRESSION & RANGE
 local CurrentRound = 1
 local MaxRounds = 9
-local MobDetectionRange = 5000
+local TargetDetectionRange = 5000
 local LastRoundTPTime = 0
 
 -- COMBAT & SKILL STATES
@@ -185,28 +185,56 @@ local function getTreasureChests()
     return chests
 end
 
--- Priority Evaluation
+-- PRIORITY LOCK-ON WITHIN DETECTION RANGE
 local function getTargetByPriority()
     if not AutoFarmDungeon then 
         return nil, nil 
     end
 
+    local char = LocalPlayer.Character
+    local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
+    if not hrp then return nil, nil end
+
+    local playerPos = hrp.Position
     local bosses, normals = getEnemies()
     local eggs = getDragonEggs()
     local chests = getTreasureChests()
 
+    local function getClosestWithinRange(list)
+        local closestObj = nil
+        local closestDist = TargetDetectionRange
+
+        for _, obj in ipairs(list) do
+            local p = getTargetPart(obj)
+            if p then
+                local dist = (p.Position - playerPos).Magnitude
+                if dist <= TargetDetectionRange and dist < closestDist then
+                    closestObj = obj
+                    closestDist = dist
+                end
+            end
+        end
+
+        return closestObj
+    end
+
     for i = 1, 4 do
         local pType = Priority[i]
         if pType == "Boss" and #bosses > 0 then
-            return bosses[1], "Boss"
+            local target = getClosestWithinRange(bosses)
+            if target then return target, "Boss" end
         elseif pType == "Normal Enemy NPC" and #normals > 0 then
-            return normals[1], "Normal"
+            local target = getClosestWithinRange(normals)
+            if target then return target, "Normal" end
         elseif pType == "Dragon Egg" and AutoDragonEgg and #eggs > 0 then
-            return eggs[1], "Egg"
+            local target = getClosestWithinRange(eggs)
+            if target then return target, "Egg" end
         elseif pType == "Treasure Chest" and AutoTreasureChest and #chests > 0 then
-            return chests[1], "Chest"
+            local target = getClosestWithinRange(chests)
+            if target then return target, "Chest" end
         end
     end
+
     return nil, nil
 end
 
@@ -219,12 +247,12 @@ local function checkForIncomingSkill(target)
     return false
 end
 
--- INSTANT DRAGON EGG PROXIMITY PROMPT TRIGGER
-local function handleEggInteraction(eggTarget)
-    if not eggTarget then return end
+-- INSTANT PROXIMITY PROMPT TRIGGER (EGGS & CHESTS)
+local function handlePromptInteraction(target)
+    if not target then return end
 
-    local prompt = eggTarget:FindFirstChild("Interact_ProximityPrompt", true) 
-        or eggTarget:FindFirstChildWhichIsA("ProximityPrompt", true)
+    local prompt = target:FindFirstChild("Interact_ProximityPrompt", true) 
+        or target:FindFirstChildWhichIsA("ProximityPrompt", true)
 
     if prompt and prompt.Enabled then
         prompt.HoldDuration = 0
@@ -253,7 +281,7 @@ local function getRoundSpawnPart(roundNum)
     return nil
 end
 
-local function hasMobsNearSpawn(spawnPart, maxDist)
+local function hasTargetsNearSpawn(spawnPart, maxDist)
     if not spawnPart then return false end
     local spawnPos = spawnPart.Position
     
@@ -268,6 +296,22 @@ local function hasMobsNearSpawn(spawnPart, maxDist)
         local p = getTargetPart(mob)
         if p and (p.Position - spawnPos).Magnitude <= maxDist then
             return true
+        end
+    end
+    if AutoDragonEgg then
+        for _, egg in ipairs(getDragonEggs()) do
+            local p = getTargetPart(egg)
+            if p and (p.Position - spawnPos).Magnitude <= maxDist then
+                return true
+            end
+        end
+    end
+    if AutoTreasureChest then
+        for _, chest in ipairs(getTreasureChests()) do
+            local p = getTargetPart(chest)
+            if p and (p.Position - spawnPos).Magnitude <= maxDist then
+                return true
+            end
         end
     end
     return false
@@ -325,7 +369,7 @@ FarmTab:CreateToggle({
     Callback = function(Value) AutoTreasureChest = Value end,
 })
 
-FarmTab:CreateSection("Round Progression Settings")
+FarmTab:CreateSection("Target Detection & Round Progression")
 
 FarmTab:CreateToggle({
     Name = "Auto Next Round/Room",
@@ -335,13 +379,13 @@ FarmTab:CreateToggle({
 })
 
 FarmTab:CreateSlider({
-    Name = "Mob Detection Range",
+    Name = "Target Detection Range",
     Range = {100, 5000},
     Increment = 50,
     Suffix = "studs",
     CurrentValue = 5000,
-    Flag = "MobDetectionRangeSlider",
-    Callback = function(Value) MobDetectionRange = Value end,
+    Flag = "TargetDetectionRangeSlider",
+    Callback = function(Value) TargetDetectionRange = Value end,
 })
 
 FarmTab:CreateSection("Auto M1 Combat")
@@ -383,7 +427,7 @@ FarmTab:CreateToggle({
     Name = "Auto Skill [ R ]",
     CurrentValue = false,
     Flag = "AutoSkillRToggle",
-    Callback = function(Value) AutoSkillR = Value end,
+    Callback = function(Value) AutoSkillRToggle = Value end,
 })
 
 FarmTab:CreateToggle({
@@ -609,8 +653,8 @@ MiscTab:CreateToggle({
 task.spawn(function()
     while true do
         if AutoFarmDungeon and AutoM1 then
-            local target = getTargetByPriority()
-            if target and not IsDodging then
+            local target, targetType = getTargetByPriority()
+            if target and not IsDodging and (targetType == "Boss" or targetType == "Normal") then
                 VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
                 task.wait(0.01)
                 VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
@@ -624,8 +668,8 @@ end)
 task.spawn(function()
     while true do
         if AutoFarmDungeon then
-            local target = getTargetByPriority()
-            if target and not IsDodging then
+            local target, targetType = getTargetByPriority()
+            if target and not IsDodging and (targetType == "Boss" or targetType == "Normal") then
                 local skillsToCast = {
                     {Key = Enum.KeyCode.Q, Enabled = AutoSkillQ},
                     {Key = Enum.KeyCode.E, Enabled = AutoSkillE},
@@ -685,9 +729,9 @@ task.spawn(function()
                     local targetPart = getTargetPart(target)
 
                     if targetPart then
-                        -- Instant Dragon Egg Interaction
-                        if targetType == "Egg" then
-                            handleEggInteraction(target)
+                        -- Instant Prompt Interactions for Eggs and Chests
+                        if targetType == "Egg" or targetType == "Chest" then
+                            handlePromptInteraction(target)
                         end
 
                         -- Skill Velocity Auto Dodge Check
@@ -708,7 +752,7 @@ task.spawn(function()
                                 IsDodging = false
                             end)
                         else
-                            -- Target Lock & Position Calculation
+                            -- Target Lock & Position Calculation for ALL Target Types (Mobs, Eggs, Chests)
                             local hDist = (targetType == "Boss") and BossDistance or NormalDistance
                             local targetCFrame = targetPart.CFrame
                             local finalCFrame
@@ -730,26 +774,24 @@ task.spawn(function()
                         end
                     end
                 elseif AutoNextRound and not IsDodging then
-                    -- Round Progression Check (Round1 -> Round9)
+                    -- Round Progression Check (Round1 -> Round9) when NO targets are within range
                     local currentSpawn = getRoundSpawnPart(CurrentRound)
                     
-                    if not currentSpawn or not hasMobsNearSpawn(currentSpawn, MobDetectionRange) then
+                    if not currentSpawn or not hasTargetsNearSpawn(currentSpawn, TargetDetectionRange) then
                         if tick() - LastRoundTPTime > 1.5 then
-                            -- Find next round spawn with mobs or increment sequentially
                             local nextRoundFound = false
 
                             for r = 1, MaxRounds do
                                 local checkRound = ((CurrentRound + r - 1) % MaxRounds) + 1
                                 local spawnCandidate = getRoundSpawnPart(checkRound)
                                 
-                                if spawnCandidate and hasMobsNearSpawn(spawnCandidate, MobDetectionRange) then
+                                if spawnCandidate and hasTargetsNearSpawn(spawnCandidate, TargetDetectionRange) then
                                     CurrentRound = checkRound
                                     nextRoundFound = true
                                     break
                                 end
                             end
 
-                            -- Fallback: Cycle to next numerical round if no specific mobs detected anywhere
                             if not nextRoundFound then
                                 CurrentRound = (CurrentRound % MaxRounds) + 1
                             end
