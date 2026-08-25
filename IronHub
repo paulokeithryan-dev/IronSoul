@@ -344,9 +344,23 @@ local function getProgressionLocations()
                 end
             end
         end
+
+        -- 3. Backup Portals: workspace.RoundDoor.Portal.Root.Safe
+        local portal = roundDoor:FindFirstChild("Portal")
+        if portal then
+            local portalRoot = portal:FindFirstChild("Root")
+            if portalRoot then
+                local safePart = portalRoot:FindFirstChild("Safe") or (portalRoot:IsA("BasePart") and portalRoot)
+                if safePart then
+                    table.insert(locations, safePart)
+                else
+                    table.insert(locations, portalRoot)
+                end
+            end
+        end
     end
 
-    -- 3. Safety Net: workspace.World (Baseplates, Island Models, Map Parts)
+    -- 4. Ultimate Safety Net: workspace.World (Baseplates, Island Models, Map Parts)
     local world = workspace:FindFirstChild("World")
     if world then
         for _, obj in ipairs(world:GetChildren()) do
