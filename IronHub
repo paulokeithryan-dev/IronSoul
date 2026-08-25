@@ -165,17 +165,21 @@ local function getTargetPart(target)
     return nil
 end
 
--- Priority Evaluation (Boss -> Normal NPC -> Egg -> Chest sequence)
+-- Priority Evaluation (Requires AutoFarmDungeon to be active)
 local function getTargetByPriority()
+    if not AutoFarmDungeon then 
+        return nil, nil 
+    end
+
     local bosses, normals = getEnemies()
     local eggs = getDragonEggs()
     local chests = getTreasureChests()
 
     for i = 1, 4 do
         local pType = Priority[i]
-        if pType == "Boss" and AutoFarmDungeon and #bosses > 0 then
+        if pType == "Boss" and #bosses > 0 then
             return bosses[1], "Boss"
-        elseif pType == "Normal Enemy NPC" and AutoFarmDungeon and #normals > 0 then
+        elseif pType == "Normal Enemy NPC" and #normals > 0 then
             return normals[1], "Normal"
         elseif pType == "Dragon Egg" and AutoDragonEgg and #eggs > 0 then
             return eggs[1], "Egg"
@@ -224,7 +228,7 @@ end
 -- FARMING TAB UI LOGIC
 ----------------------------------------------------
 
-FarmTab:CreateSection("Autofarm Targets")
+FarmTab:CreateSection("Autofarm Master & Targets")
 
 FarmTab:CreateToggle({
     Name = "Autofarm Dungeon",
@@ -505,10 +509,10 @@ MiscTab:CreateToggle({
 -- COMBAT LOOPS (M1 & SKILLS)
 ----------------------------------------------------
 
--- Auto M1 Loop
+-- Auto M1 Loop (Requires AutoFarmDungeon to be true)
 task.spawn(function()
     while true do
-        if AutoM1 then
+        if AutoFarmDungeon and AutoM1 then
             local target = getTargetByPriority()
             if target and not IsDodging then
                 VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
@@ -520,33 +524,35 @@ task.spawn(function()
     end
 end)
 
--- Auto Skill & Weapon Switch Loop
+-- Auto Skill & Weapon Switch Loop (Requires AutoFarmDungeon to be true)
 task.spawn(function()
     while true do
-        local target = getTargetByPriority()
-        if target and not IsDodging then
-            local skillsToCast = {
-                {Key = Enum.KeyCode.Q, Enabled = AutoSkillQ},
-                {Key = Enum.KeyCode.E, Enabled = AutoSkillE},
-                {Key = Enum.KeyCode.R, Enabled = AutoSkillR},
-                {Key = Enum.KeyCode.G, Enabled = AutoSkillG},
-            }
+        if AutoFarmDungeon then
+            local target = getTargetByPriority()
+            if target and not IsDodging then
+                local skillsToCast = {
+                    {Key = Enum.KeyCode.Q, Enabled = AutoSkillQ},
+                    {Key = Enum.KeyCode.E, Enabled = AutoSkillE},
+                    {Key = Enum.KeyCode.R, Enabled = AutoSkillR},
+                    {Key = Enum.KeyCode.G, Enabled = AutoSkillG},
+                }
 
-            local usedAnySkill = false
+                local usedAnySkill = false
 
-            for _, skill in ipairs(skillsToCast) do
-                if skill.Enabled and not IsDodging then
-                    VirtualInputManager:SendKeyEvent(true, skill.Key, false, game)
-                    task.wait(0.05)
-                    VirtualInputManager:SendKeyEvent(false, skill.Key, false, game)
-                    task.wait(0.15)
-                    usedAnySkill = true
+                for _, skill in ipairs(skillsToCast) do
+                    if skill.Enabled and not IsDodging and AutoFarmDungeon then
+                        VirtualInputManager:SendKeyEvent(true, skill.Key, false, game)
+                        task.wait(0.05)
+                        VirtualInputManager:SendKeyEvent(false, skill.Key, false, game)
+                        task.wait(0.15)
+                        usedAnySkill = true
+                    end
                 end
-            end
 
-            if usedAnySkill and AutoSwitchWeapon then
-                switchToNextWeapon()
-                task.wait(0.3)
+                if usedAnySkill and AutoSwitchWeapon then
+                    switchToNextWeapon()
+                    task.wait(0.3)
+                end
             end
         end
         task.wait(0.2)
@@ -565,7 +571,7 @@ task.spawn(function()
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
 
         if hrp then
-            -- Anti Void Protection
+            -- Anti Void Protection (Independent of Autofarm state)
             if AntiVoidEnabled then
                 local voidHeight = (workspace.FallenPartsDestroyHeight or -500) + 50
                 if hrp.Position.Y < voidHeight then
@@ -574,61 +580,63 @@ task.spawn(function()
                 end
             end
 
-            -- Priority Target Evaluation
-            local target, targetType = getTargetByPriority()
+            -- Priority Lock-on & Room Progression (Strictly requires AutoFarmDungeon)
+            if AutoFarmDungeon then
+                local target, targetType = getTargetByPriority()
 
-            if target and not IsDodging then
-                local targetPart = getTargetPart(target)
+                if target and not IsDodging then
+                    local targetPart = getTargetPart(target)
 
-                if targetPart then
-                    -- Skill Velocity Auto Dodge Check
-                    if checkForIncomingSkill(target) then
-                        IsDodging = true
-                        task.spawn(function()
-                            local dodgeOffset = Vector3.zero
-                            if DodgeMode == "Up" then
-                                dodgeOffset = Vector3.new(0, VerticalDodgeDistance, 0)
-                            elseif DodgeMode == "Away" then
-                                dodgeOffset = (hrp.CFrame.LookVector * -AutoDodgeDistance)
-                            elseif DodgeMode == "Up + Away" then
-                                dodgeOffset = (hrp.CFrame.LookVector * -AutoDodgeDistance) + Vector3.new(0, VerticalDodgeDistance, 0)
+                    if targetPart then
+                        -- Skill Velocity Auto Dodge Check
+                        if checkForIncomingSkill(target) then
+                            IsDodging = true
+                            task.spawn(function()
+                                local dodgeOffset = Vector3.zero
+                                if DodgeMode == "Up" then
+                                    dodgeOffset = Vector3.new(0, VerticalDodgeDistance, 0)
+                                elseif DodgeMode == "Away" then
+                                    dodgeOffset = (hrp.CFrame.LookVector * -AutoDodgeDistance)
+                                elseif DodgeMode == "Up + Away" then
+                                    dodgeOffset = (hrp.CFrame.LookVector * -AutoDodgeDistance) + Vector3.new(0, VerticalDodgeDistance, 0)
+                                end
+
+                                hrp.CFrame = hrp.CFrame + dodgeOffset
+                                task.wait(DodgeWait)
+                                IsDodging = false
+                            end)
+                        else
+                            -- Target Lock & Position Calculation
+                            local hDist = (targetType == "Boss") and BossDistance or NormalDistance
+                            local targetCFrame = targetPart.CFrame
+                            local finalCFrame
+
+                            if FarmPosition == "Orbit" then
+                                OrbitAngle = (OrbitAngle + 3) % 360
+                                local rad = math.rad(OrbitAngle)
+                                local offset = Vector3.new(math.cos(rad) * hDist, VerticalDistance, math.sin(rad) * hDist)
+                                finalCFrame = CFrame.new(targetCFrame.Position + offset, targetCFrame.Position)
+                            elseif FarmPosition == "Above" then
+                                finalCFrame = CFrame.new(targetCFrame.Position + Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
+                            elseif FarmPosition == "Under" then
+                                finalCFrame = CFrame.new(targetCFrame.Position - Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
                             end
 
-                            hrp.CFrame = hrp.CFrame + dodgeOffset
-                            task.wait(DodgeWait)
-                            IsDodging = false
-                        end)
-                    else
-                        -- Target Lock & Position Calculation
-                        local hDist = (targetType == "Boss") and BossDistance or NormalDistance
-                        local targetCFrame = targetPart.CFrame
-                        local finalCFrame
-
-                        if FarmPosition == "Orbit" then
-                            OrbitAngle = (OrbitAngle + 3) % 360
-                            local rad = math.rad(OrbitAngle)
-                            local offset = Vector3.new(math.cos(rad) * hDist, VerticalDistance, math.sin(rad) * hDist)
-                            finalCFrame = CFrame.new(targetCFrame.Position + offset, targetCFrame.Position)
-                        elseif FarmPosition == "Above" then
-                            finalCFrame = CFrame.new(targetCFrame.Position + Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
-                        elseif FarmPosition == "Under" then
-                            finalCFrame = CFrame.new(targetCFrame.Position - Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
+                            hrp.AssemblyLinearVelocity = Vector3.zero
+                            hrp.CFrame = finalCFrame
                         end
-
-                        hrp.AssemblyLinearVelocity = Vector3.zero
-                        hrp.CFrame = finalCFrame
                     end
-                end
-            elseif AutoNextRound and not target and not IsDodging then
-                -- Teleport to next round respawn point when room is clear
-                local respawnFolder = workspace:FindFirstChild("PlayerRespawn")
-                if respawnFolder then
-                    local rounds = respawnFolder:GetChildren()
-                    if #rounds > 0 then
-                        local latestRound = rounds[#rounds]
-                        local spawnPart = latestRound:IsA("BasePart") and latestRound or latestRound:FindFirstChildWhichIsA("BasePart", true)
-                        if spawnPart then
-                            hrp.CFrame = spawnPart.CFrame * CFrame.new(0, 3, 0)
+                elseif AutoNextRound and not target and not IsDodging then
+                    -- Teleport to next round respawn point when room is clear
+                    local respawnFolder = workspace:FindFirstChild("PlayerRespawn")
+                    if respawnFolder then
+                        local rounds = respawnFolder:GetChildren()
+                        if #rounds > 0 then
+                            local latestRound = rounds[#rounds]
+                            local spawnPart = latestRound:IsA("BasePart") and latestRound or latestRound:FindFirstChildWhichIsA("BasePart", true)
+                            if spawnPart then
+                                hrp.CFrame = spawnPart.CFrame * CFrame.new(0, 3, 0)
+                            end
                         end
                     end
                 end
