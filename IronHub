@@ -37,7 +37,7 @@ local AutoM1Delay = 0.1
 local AutoSkillQ = false
 local AutoSkillE = false
 local AutoSkillR = false
-local AutoSkillG = false
+local AutoSkillC = false
 local AutoSwitchWeapon = false
 
 -- POSITION & DISTANCE
@@ -72,11 +72,37 @@ local OrbitAngle = 0
 -- HELPER FUNCTIONS: TARGET DISCOVERY & DETECT
 ----------------------------------------------------
 
+-- FIX 2: Universal Part Locking (Works with GUID Model names, Torso, HRP, BaseParts)
+local function getTargetPart(target)
+    if not target then return nil end
+    if target:IsA("Model") then
+        return target.PrimaryPart 
+            or target:FindFirstChild("HumanoidRootPart") 
+            or target:FindFirstChild("Torso") 
+            or target:FindFirstChild("UpperTorso") 
+            or target:FindFirstChildWhichIsA("BasePart", true)
+    elseif target:IsA("BasePart") then
+        return target
+    end
+    return nil
+end
+
+local function isAlive(model)
+    if not model or not model.Parent then return false end
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if hum then
+        return hum.Health > 0
+    end
+    local part = getTargetPart(model)
+    return part ~= nil
+end
+
 local function isBoss(npc)
-    if not npc or not npc:FindFirstChild("HumanoidRootPart") then return false end
+    if not npc then return false end
+    local hrp = getTargetPart(npc)
+    if not hrp then return false end
     
-    local hrp = npc.HumanoidRootPart
-    local localEnemy = hrp:FindFirstChild("LocalEnemyNpc")
+    local localEnemy = hrp:FindFirstChild("LocalEnemyNpc") or npc:FindFirstChild("LocalEnemyNpc")
     if localEnemy then
         if localEnemy:IsA("ValueBase") and tostring(localEnemy.Value):lower():find("boss") then
             return true
@@ -91,17 +117,15 @@ local function isBoss(npc)
     return false
 end
 
-local function isAlive(model)
-    if not model or not model.Parent then return false end
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    if hum and hum.Health > 0 then return true end
-    local hrp = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
-    return hrp ~= nil
-end
-
+-- FIX 2: Dynamic Enemy Folder & GUID Model Scanner
 local function getEnemies()
     local bosses, normals = {}, {}
-    local enemyFolder = workspace:FindFirstChild("EnemyNpc")
+    local enemyFolder = workspace:FindFirstChild("EnemyNpc") 
+        or workspace:FindFirstChild("Enemies") 
+        or workspace:FindFirstChild("Mobs") 
+        or workspace:FindFirstChild("Monsters") 
+        or workspace:FindFirstChild("Live")
+
     if enemyFolder then
         for _, npc in ipairs(enemyFolder:GetChildren()) do
             if isAlive(npc) then
@@ -155,16 +179,6 @@ local function getTreasureChests()
     return chests
 end
 
-local function getTargetPart(target)
-    if not target then return nil end
-    if target:IsA("Model") then
-        return target.PrimaryPart or target:FindFirstChild("HumanoidRootPart") or target:FindFirstChildWhichIsA("BasePart", true)
-    elseif target:IsA("BasePart") then
-        return target
-    end
-    return nil
-end
-
 -- Priority Evaluation (Requires AutoFarmDungeon to be active)
 local function getTargetByPriority()
     if not AutoFarmDungeon then 
@@ -192,8 +206,8 @@ end
 
 local function checkForIncomingSkill(target)
     if not AutoDodge or not target then return false end
-    local hrp = target:FindFirstChild("HumanoidRootPart")
-    if hrp and hrp:FindFirstChild("SkillVelocity") then
+    local targetPart = getTargetPart(target)
+    if targetPart and targetPart:FindFirstChild("SkillVelocity") then
         return true
     end
     return false
@@ -293,18 +307,20 @@ FarmTab:CreateToggle({
     Callback = function(Value) AutoSkillE = Value end,
 })
 
+-- FIX 3: Correct Variable Assignment for AutoSkillR
 FarmTab:CreateToggle({
     Name = "Auto Skill [ R ]",
     CurrentValue = false,
     Flag = "AutoSkillRToggle",
-    Callback = function(Value) AutoSkillRToggle = Value end,
+    Callback = function(Value) AutoSkillR = Value end,
 })
 
+-- Update: Skill Keyboard Bind set to C
 FarmTab:CreateToggle({
-    Name = "Auto Skill [ G ]",
+    Name = "Auto Skill [ C ]",
     CurrentValue = false,
-    Flag = "AutoSkillGToggle",
-    Callback = function(Value) AutoSkillG = Value end,
+    Flag = "AutoSkillCToggle",
+    Callback = function(Value) AutoSkillC = Value end,
 })
 
 FarmTab:CreateToggle({
@@ -506,7 +522,7 @@ MiscTab:CreateToggle({
 })
 
 ----------------------------------------------------
--- COMBAT LOOPS (M1 & SKILLS)
+-- COMBAT LOOPS (M1 & SKILLS Q, E, R, C)
 ----------------------------------------------------
 
 -- Auto M1 Loop (Requires AutoFarmDungeon to be true)
@@ -524,7 +540,7 @@ task.spawn(function()
     end
 end)
 
--- Auto Skill & Weapon Switch Loop (Requires AutoFarmDungeon to be true)
+-- Auto Skill Loop (Skills: Q, E, R, C)
 task.spawn(function()
     while true do
         if AutoFarmDungeon then
@@ -534,7 +550,7 @@ task.spawn(function()
                     {Key = Enum.KeyCode.Q, Enabled = AutoSkillQ},
                     {Key = Enum.KeyCode.E, Enabled = AutoSkillE},
                     {Key = Enum.KeyCode.R, Enabled = AutoSkillR},
-                    {Key = Enum.KeyCode.G, Enabled = AutoSkillG},
+                    {Key = Enum.KeyCode.C, Enabled = AutoSkillC},
                 }
 
                 local usedAnySkill = false
@@ -568,19 +584,20 @@ task.spawn(function()
         task.wait(0.02)
 
         local char = LocalPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
 
         if hrp then
-            -- Anti Void Protection (Independent of Autofarm state)
+            -- Anti Void Protection
             if AntiVoidEnabled then
                 local voidHeight = (workspace.FallenPartsDestroyHeight or -500) + 50
                 if hrp.Position.Y < voidHeight then
                     hrp.AssemblyLinearVelocity = Vector3.zero
+                    hrp.AssemblyAngularVelocity = Vector3.zero
                     hrp.CFrame = hrp.CFrame + Vector3.new(0, 200, 0)
                 end
             end
 
-            -- Priority Lock-on & Room Progression (Strictly requires AutoFarmDungeon)
+            -- Priority Lock-on & Room Progression
             if AutoFarmDungeon then
                 local target, targetType = getTargetByPriority()
 
@@ -622,7 +639,9 @@ task.spawn(function()
                                 finalCFrame = CFrame.new(targetCFrame.Position - Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
                             end
 
+                            -- FIX 4: Physics Engine Resistance Fix (Zero linear & angular momentum)
                             hrp.AssemblyLinearVelocity = Vector3.zero
+                            hrp.AssemblyAngularVelocity = Vector3.zero
                             hrp.CFrame = finalCFrame
                         end
                     end
@@ -635,6 +654,8 @@ task.spawn(function()
                             local latestRound = rounds[#rounds]
                             local spawnPart = latestRound:IsA("BasePart") and latestRound or latestRound:FindFirstChildWhichIsA("BasePart", true)
                             if spawnPart then
+                                hrp.AssemblyLinearVelocity = Vector3.zero
+                                hrp.AssemblyAngularVelocity = Vector3.zero
                                 hrp.CFrame = spawnPart.CFrame * CFrame.new(0, 3, 0)
                             end
                         end
