@@ -30,6 +30,12 @@ local AutoDragonEgg = false
 local AutoTreasureChest = false
 local AutoNextRound = false
 
+-- ROUND PROGRESSION & RANGE
+local CurrentRound = 1
+local MaxRounds = 9
+local MobDetectionRange = 5000
+local LastRoundTPTime = 0
+
 -- COMBAT & SKILL STATES
 local AutoM1 = false
 local AutoM1Delay = 0.1
@@ -62,7 +68,6 @@ local VerticalDodgeDistance = 20
 local DodgeMode = "Up + Away"
 local DodgeWait = 1.5
 local IsDodging = false
-local IsInteractingWithEgg = false
 
 -- MISC STATES
 local InfZoomEnabled = false
@@ -214,30 +219,58 @@ local function checkForIncomingSkill(target)
     return false
 end
 
--- Dragon Egg Proximity Prompt Handler (Hold F keybind / Trigger)
+-- INSTANT DRAGON EGG PROXIMITY PROMPT TRIGGER
 local function handleEggInteraction(eggTarget)
-    if not eggTarget or IsInteractingWithEgg then return end
+    if not eggTarget then return end
 
     local prompt = eggTarget:FindFirstChild("Interact_ProximityPrompt", true) 
         or eggTarget:FindFirstChildWhichIsA("ProximityPrompt", true)
 
     if prompt and prompt.Enabled then
-        IsInteractingWithEgg = true
-        
-        -- Fire prompt natively if executor supports it
+        prompt.HoldDuration = 0
         if fireproximityprompt then
-            fireproximityprompt(prompt)
-            task.wait(0.2)
+            fireproximityprompt(prompt, 0)
         else
-            -- Hold F key simulation based on prompt duration
-            local holdDuration = (prompt.HoldDuration > 0) and prompt.HoldDuration or 0.5
             VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
-            task.wait(holdDuration + 0.1)
+            task.wait(0.01)
             VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
         end
-        
-        IsInteractingWithEgg = false
     end
+end
+
+----------------------------------------------------
+-- HELPER FUNCTIONS: ROUND PROGRESSION & SPAWNS
+----------------------------------------------------
+
+local function getRoundSpawnPart(roundNum)
+    local pRespawn = workspace:FindFirstChild("PlayerRespawn")
+    if pRespawn then
+        local roundObj = pRespawn:FindFirstChild("Round" .. tostring(roundNum))
+        if roundObj then
+            return roundObj:IsA("BasePart") and roundObj or roundObj:FindFirstChildWhichIsA("BasePart", true)
+        end
+    end
+    return nil
+end
+
+local function hasMobsNearSpawn(spawnPart, maxDist)
+    if not spawnPart then return false end
+    local spawnPos = spawnPart.Position
+    
+    local bosses, normals = getEnemies()
+    for _, mob in ipairs(bosses) do
+        local p = getTargetPart(mob)
+        if p and (p.Position - spawnPos).Magnitude <= maxDist then
+            return true
+        end
+    end
+    for _, mob in ipairs(normals) do
+        local p = getTargetPart(mob)
+        if p and (p.Position - spawnPos).Magnitude <= maxDist then
+            return true
+        end
+    end
+    return false
 end
 
 ----------------------------------------------------
@@ -292,11 +325,23 @@ FarmTab:CreateToggle({
     Callback = function(Value) AutoTreasureChest = Value end,
 })
 
+FarmTab:CreateSection("Round Progression Settings")
+
 FarmTab:CreateToggle({
     Name = "Auto Next Round/Room",
     CurrentValue = false,
     Flag = "AutoNextRoundToggle",
     Callback = function(Value) AutoNextRound = Value end,
+})
+
+FarmTab:CreateSlider({
+    Name = "Mob Detection Range",
+    Range = {100, 5000},
+    Increment = 50,
+    Suffix = "studs",
+    CurrentValue = 5000,
+    Flag = "MobDetectionRangeSlider",
+    Callback = function(Value) MobDetectionRange = Value end,
 })
 
 FarmTab:CreateSection("Auto M1 Combat")
@@ -564,7 +609,7 @@ MiscTab:CreateToggle({
 task.spawn(function()
     while true do
         if AutoFarmDungeon and AutoM1 then
-            local target, targetType = getTargetByPriority()
+            local target = getTargetByPriority()
             if target and not IsDodging then
                 VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
                 task.wait(0.01)
@@ -611,7 +656,7 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------
--- MAIN AUTOFARM & LOCK-ON LOOP
+-- MAIN AUTOFARM, LOCK-ON & ROUND PROGRESSION LOOP
 ----------------------------------------------------
 
 task.spawn(function()
@@ -632,7 +677,7 @@ task.spawn(function()
                 end
             end
 
-            -- Priority Lock-on & Room Progression
+            -- Priority Lock-on & Sequential Room Progression
             if AutoFarmDungeon then
                 local target, targetType = getTargetByPriority()
 
@@ -640,11 +685,9 @@ task.spawn(function()
                     local targetPart = getTargetPart(target)
 
                     if targetPart then
-                        -- Handle Dragon Egg Interaction (Hold F Prompt)
+                        -- Instant Dragon Egg Interaction
                         if targetType == "Egg" then
-                            task.spawn(function()
-                                handleEggInteraction(target)
-                            end)
+                            handleEggInteraction(target)
                         end
 
                         -- Skill Velocity Auto Dodge Check
@@ -681,24 +724,42 @@ task.spawn(function()
                                 finalCFrame = CFrame.new(targetCFrame.Position - Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
                             end
 
-                            -- Freeze velocities to prevent physics pushback
                             hrp.AssemblyLinearVelocity = Vector3.zero
                             hrp.AssemblyAngularVelocity = Vector3.zero
                             hrp.CFrame = finalCFrame
                         end
                     end
-                elseif AutoNextRound and not target and not IsDodging then
-                    -- Teleport to next round respawn point when room is clear
-                    local respawnFolder = workspace:FindFirstChild("PlayerRespawn")
-                    if respawnFolder then
-                        local rounds = respawnFolder:GetChildren()
-                        if #rounds > 0 then
-                            local latestRound = rounds[#rounds]
-                            local spawnPart = latestRound:IsA("BasePart") and latestRound or latestRound:FindFirstChildWhichIsA("BasePart", true)
-                            if spawnPart then
+                elseif AutoNextRound and not IsDodging then
+                    -- Round Progression Check (Round1 -> Round9)
+                    local currentSpawn = getRoundSpawnPart(CurrentRound)
+                    
+                    if not currentSpawn or not hasMobsNearSpawn(currentSpawn, MobDetectionRange) then
+                        if tick() - LastRoundTPTime > 1.5 then
+                            -- Find next round spawn with mobs or increment sequentially
+                            local nextRoundFound = false
+
+                            for r = 1, MaxRounds do
+                                local checkRound = ((CurrentRound + r - 1) % MaxRounds) + 1
+                                local spawnCandidate = getRoundSpawnPart(checkRound)
+                                
+                                if spawnCandidate and hasMobsNearSpawn(spawnCandidate, MobDetectionRange) then
+                                    CurrentRound = checkRound
+                                    nextRoundFound = true
+                                    break
+                                end
+                            end
+
+                            -- Fallback: Cycle to next numerical round if no specific mobs detected anywhere
+                            if not nextRoundFound then
+                                CurrentRound = (CurrentRound % MaxRounds) + 1
+                            end
+
+                            local nextSpawnPart = getRoundSpawnPart(CurrentRound)
+                            if nextSpawnPart then
                                 hrp.AssemblyLinearVelocity = Vector3.zero
                                 hrp.AssemblyAngularVelocity = Vector3.zero
-                                hrp.CFrame = spawnPart.CFrame * CFrame.new(0, 3, 0)
+                                hrp.CFrame = nextSpawnPart.CFrame * CFrame.new(0, 3, 0)
+                                LastRoundTPTime = tick()
                             end
                         end
                     end
@@ -707,3 +768,8 @@ task.spawn(function()
         end
     end
 end)
+
+----------------------------------------------------
+-- RAYFIELD AUTO CONFIGURATION LOAD
+----------------------------------------------------
+Rayfield:LoadConfiguration()
