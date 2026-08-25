@@ -30,10 +30,6 @@ local AutoDragonEgg = false
 local AutoTreasureChest = false
 local AutoNextRound = false
 
--- END-GAME SETTLEMENT STATES
-local AutoPlayAgain = false
-local AutoReturnLobby = false
-
 -- PROGRESSION & RANGE
 local TargetDetectionRange = 5000
 local CurrentLocationIndex = 1
@@ -77,6 +73,48 @@ local InfZoomEnabled = false
 local AntiVoidEnabled = false
 local LowVFXEnabled = false
 local UltraLowVFXEnabled = false
+
+----------------------------------------------------
+-- ADVANCED EGG INTERACTION & TWEEN EVENT BYPASS
+----------------------------------------------------
+
+-- Scans nil instances and runtime garbage collection to force-complete custom Framework Tweens
+local function bypassDragonEggTweenEvents()
+    -- 1. Scan getnilinstances for hidden signals/BindableEvents created by LocalDragonEgg
+    if getnilinstances then
+        for _, obj in ipairs(getnilinstances()) do
+            if obj:IsA("BindableEvent") and (obj.Name == "Event" or obj.Name == "_completed" or obj.Name == "_playbackStateChanged") then
+                pcall(function()
+                    obj:Fire(Enum.PlaybackState.Completed)
+                end)
+            end
+        end
+    end
+
+    -- 2. Scan GC for active ReplicatedStorage.Framework.Fundamental.Tween objects
+    if getgc then
+        for _, tableObj in ipairs(getgc(true)) do
+            if typeof(tableObj) == "table" then
+                -- Target custom tween objects controlling egg animations
+                if rawget(tableObj, "PlaybackState") ~= nil and rawget(tableObj, "_completed") ~= nil then
+                    rawset(tableObj, "PlaybackState", Enum.PlaybackState.Completed)
+                    
+                    local completedSignal = rawget(tableObj, "_completed")
+                    if typeof(completedSignal) == "Instance" and completedSignal:IsA("BindableEvent") then
+                        pcall(function() completedSignal:Fire(Enum.PlaybackState.Completed) end)
+                    elseif typeof(completedSignal) == "table" and type(completedSignal.Fire) == "function" then
+                        pcall(function() completedSignal:Fire(Enum.PlaybackState.Completed) end)
+                    end
+
+                    local callback = rawget(tableObj, "Callback")
+                    if type(callback) == "function" then
+                        pcall(callback, Enum.PlaybackState.Completed)
+                    end
+                end
+            end
+        end
+    end
+end
 
 ----------------------------------------------------
 -- HELPER FUNCTIONS: TARGET DISCOVERY & DETECT
@@ -295,10 +333,11 @@ local function checkForIncomingSkill(target)
     return false
 end
 
--- PROXIMITY PROMPT TRIGGER (FIRED WHEN CLOSE/ORBITING)
-local function handlePromptInteraction(target)
+-- PROXIMITY PROMPT & EGG EVENT TRIGGER
+local function handlePromptInteraction(target, targetType)
     if not target then return end
 
+    -- Execute standard proximity prompt if present
     local prompt = target:FindFirstChildOfClass("ProximityPrompt")
         or target:FindFirstChild("Interact_ProximityPrompt", true) 
         or target:FindFirstChildWhichIsA("ProximityPrompt", true)
@@ -316,122 +355,10 @@ local function handlePromptInteraction(target)
             VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
         end
     end
-end
 
-----------------------------------------------------
--- HELPER FUNCTIONS: UI SCANNER & END-GAME AUTO-CLICKER
-----------------------------------------------------
-
-local function safeClickButton(btn)
-    if not btn or not btn:IsA("GuiButton") then return end
-
-    -- Method 1: Fire Signal (Most reliable on standard executors)
-    if firesignal then
-        pcall(function() firesignal(btn.MouseButton1Click) end)
-        pcall(function() firesignal(btn.Activated) end)
-    end
-
-    -- Method 2: Fire stored connections
-    if getconnections then
-        pcall(function()
-            for _, conn in ipairs(getconnections(btn.MouseButton1Click)) do
-                if conn.Function then conn:Fire() end
-            end
-            for _, conn in ipairs(getconnections(btn.Activated)) do
-                if conn.Function then conn:Fire() end
-            end
-        end)
-    end
-
-    -- Method 3: Mouse position click fallback
-    if btn.AbsoluteVisible then
-        pcall(function()
-            local pos = btn.AbsolutePosition
-            local size = btn.AbsoluteSize
-            local centerX = pos.X + (size.X / 2)
-            local centerY = pos.Y + (size.Y / 2) + 36
-            VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, true, game, 0)
-            task.wait(0.02)
-            VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, false, game, 0)
-        end)
-    end
-end
-
-local function scanAndTriggerEndGameButtons()
-    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then return end
-
-    -- Check if element and all parent containers are visible
-    local function isReallyVisible(guiObj)
-        if not guiObj then return false end
-        local curr = guiObj
-        while curr and curr:IsA("GuiObject") do
-            if not curr.Visible then return false end
-            curr = curr.Parent
-        end
-        return true
-    end
-
-    -- 1. PROCESS AUTO PLAY AGAIN
-    if AutoPlayAgain then
-        local playBtn = nil
-
-        -- Direct path check
-        local resultGui = playerGui:FindFirstChild("ResultGui")
-        if resultGui then
-            local screenSettlement = resultGui:FindFirstChild("ScreenSettlement")
-            if screenSettlement then
-                local btnGroup = screenSettlement:FindFirstChild("BtnGroup")
-                if btnGroup then
-                    playBtn = btnGroup:FindFirstChild("PlayAgainBtn")
-                end
-            end
-        end
-
-        -- Full UI Scan fallback if direct path isn't found
-        if not playBtn then
-            for _, desc in ipairs(playerGui:GetDescendants()) do
-                if desc:IsA("GuiButton") and (desc.Name == "PlayAgainBtn" or desc.Name:lower():find("playagain")) then
-                    playBtn = desc
-                    break
-                end
-            end
-        end
-
-        if playBtn and isReallyVisible(playBtn) then
-            safeClickButton(playBtn)
-        end
-    end
-
-    -- 2. PROCESS AUTO RETURN TO LOBBY
-    if AutoReturnLobby then
-        local lobbyBtn = nil
-
-        -- Direct path check
-        local resultGui = playerGui:FindFirstChild("ResultGui")
-        if resultGui then
-            local screenSettlement = resultGui:FindFirstChild("ScreenSettlement")
-            if screenSettlement then
-                local btnGroup = screenSettlement:FindFirstChild("BtnGroup")
-                if btnGroup then
-                    lobbyBtn = btnGroup:FindFirstChild("ReturnToLobbyBtn")
-                end
-            end
-        end
-
-        -- Full UI Scan fallback if direct path isn't found
-        if not lobbyBtn then
-            for _, desc in ipairs(playerGui:GetDescendants()) do
-                if desc:IsA("GuiButton") and (desc.Name == "ReturnToLobbyBtn" or desc.Name:lower():find("return") or desc.Name:lower():find("lobby")) then
-                    lobbyBtn = desc
-                    break
-                end
-            end
-        end
-
-        if lobbyBtn and isReallyVisible(lobbyBtn) then
-            safeClickButton(lobbyBtn)
-        end
+    -- If target is a Dragon Egg, fire the custom nil tween event bypass instantly
+    if targetType == "Egg" then
+        bypassDragonEggTweenEvents()
     end
 end
 
@@ -481,7 +408,7 @@ local function getProgressionLocations()
         end
     end
 
-    -- 4. Ultimate Safety Net: workspace.World
+    -- 4. Ultimate Safety Net: workspace.World (Baseplates, Island Models, Map Parts)
     local world = workspace:FindFirstChild("World")
     if world then
         for _, obj in ipairs(world:GetChildren()) do
@@ -545,22 +472,6 @@ FarmTab:CreateToggle({
     CurrentValue = false,
     Flag = "AutoTreasureChestToggle",
     Callback = function(Value) AutoTreasureChest = Value end,
-})
-
-FarmTab:CreateSection("End-Game Match Settlement")
-
-FarmTab:CreateToggle({
-    Name = "Auto Play Again",
-    CurrentValue = false,
-    Flag = "AutoPlayAgainToggle",
-    Callback = function(Value) AutoPlayAgain = Value end,
-})
-
-FarmTab:CreateToggle({
-    Name = "Auto Return to Lobby",
-    CurrentValue = false,
-    Flag = "AutoReturnLobbyToggle",
-    Callback = function(Value) AutoReturnLobby = Value end,
 })
 
 FarmTab:CreateSection("Target Detection & Round Progression")
@@ -838,18 +749,8 @@ MiscTab:CreateToggle({
 })
 
 ----------------------------------------------------
--- BACKGROUND LOOPS (COMBAT & END-GAME SCANNER)
+-- COMBAT LOOPS (M1 & SKILLS NUKING ALL TARGET TYPES)
 ----------------------------------------------------
-
--- End-Game Settlement Auto Clicker Loop
-task.spawn(function()
-    while true do
-        if AutoPlayAgain or AutoReturnLobby then
-            scanAndTriggerEndGameButtons()
-        end
-        task.wait(0.5)
-    end
-end)
 
 -- Auto M1 Loop
 task.spawn(function()
@@ -924,7 +825,6 @@ task.spawn(function()
             end
 
             if AutoFarmDungeon then
-                -- Combined Target Selector: Range Check -> Global Enemy Fallback -> Nil
                 local target, targetType = getActiveTarget()
 
                 if target and not IsDodging then
@@ -970,9 +870,9 @@ task.spawn(function()
                             hrp.AssemblyAngularVelocity = Vector3.zero
                             hrp.CFrame = finalCFrame
 
-                            -- Activate Egg / Chest Proximity Prompt while orbiting/nuking
+                            -- Activate Egg / Chest Proximity Prompt & Fire Nil Tween Bypass
                             if targetType == "Egg" or targetType == "Chest" then
-                                handlePromptInteraction(target)
+                                handlePromptInteraction(target, targetType)
                             end
                         end
                     end
