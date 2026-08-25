@@ -31,7 +31,6 @@ local AutoTreasureChest = false
 local AutoNextRound = false
 
 -- PROGRESSION & RANGE
-local TargetDetectionRange = 5000
 local CurrentLocationIndex = 1
 local LastRoomTPTime = 0
 
@@ -184,26 +183,27 @@ local function getTreasureChests()
     return chests
 end
 
--- PRIORITY LOCK-ON WITHIN DETECTION RANGE
-local function getTargetByPriority()
+-- UNIFIED MAP-WIDE TARGET SELECTOR (NO DISTANCE CAP)
+local function getActiveTarget()
+    if not AutoFarmDungeon then return nil, nil end
+
     local char = LocalPlayer.Character
     local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
-    if not hrp then return nil, nil end
+    local playerPos = hrp and hrp.Position or Vector3.zero
 
-    local playerPos = hrp.Position
     local bosses, normals = getEnemies()
     local eggs = getDragonEggs()
     local chests = getTreasureChests()
 
-    local function getClosestWithinRange(list)
+    local function getClosestGlobal(list)
         local closestObj = nil
-        local closestDist = TargetDetectionRange
+        local closestDist = math.huge
 
         for _, obj in ipairs(list) do
             local p = getTargetPart(obj)
             if p then
                 local dist = (p.Position - playerPos).Magnitude
-                if dist <= TargetDetectionRange and dist < closestDist then
+                if dist < closestDist then
                     closestObj = obj
                     closestDist = dist
                 end
@@ -216,67 +216,18 @@ local function getTargetByPriority()
     for i = 1, 4 do
         local pType = Priority[i]
         if pType == "Boss" and #bosses > 0 then
-            local target = getClosestWithinRange(bosses)
+            local target = getClosestGlobal(bosses)
             if target then return target, "Boss" end
         elseif pType == "Normal Enemy NPC" and #normals > 0 then
-            local target = getClosestWithinRange(normals)
+            local target = getClosestGlobal(normals)
             if target then return target, "Normal" end
         elseif pType == "Dragon Egg" and AutoDragonEgg and #eggs > 0 then
-            local target = getClosestWithinRange(eggs)
+            local target = getClosestGlobal(eggs)
             if target then return target, "Egg" end
         elseif pType == "Treasure Chest" and AutoTreasureChest and #chests > 0 then
-            local target = getClosestWithinRange(chests)
+            local target = getClosestGlobal(chests)
             if target then return target, "Chest" end
         end
-    end
-
-    return nil, nil
-end
-
--- SCAN WORKSPACE.ENEMYNPC REGARDLESS OF DISTANCE (FALLBACK BEFORE NEXT ROOM TP)
-local function getGlobalEnemy()
-    local bosses, normals = getEnemies()
-    local char = LocalPlayer.Character
-    local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
-    local playerPos = hrp and hrp.Position or Vector3.zero
-
-    local closestEnemy = nil
-    local closestDist = math.huge
-
-    local function checkList(list)
-        for _, npc in ipairs(list) do
-            local p = getTargetPart(npc)
-            if p then
-                local dist = (p.Position - playerPos).Magnitude
-                if dist < closestDist then
-                    closestEnemy = npc
-                    closestDist = dist
-                end
-            end
-        end
-    end
-
-    checkList(bosses)
-    checkList(normals)
-
-    return closestEnemy
-end
-
--- MASTER TARGET SELECTOR (5000 STUDS PRIORITY -> GLOBAL ENEMY SCAN -> NIL)
-local function getActiveTarget()
-    if not AutoFarmDungeon then return nil, nil end
-
-    -- 1. Try finding target by priority within range
-    local target, targetType = getTargetByPriority()
-    if target then
-        return target, targetType
-    end
-
-    -- 2. Fallback: Scan entire workspace.EnemyNpc for ANY enemy before room progression
-    local globalEnemy = getGlobalEnemy()
-    if globalEnemy then
-        local enemyType = isBoss(globalEnemy) and "Boss" or "Normal"
-        return globalEnemy, enemyType
     end
 
     return nil, nil
@@ -422,16 +373,6 @@ FarmTab:CreateToggle({
     CurrentValue = false,
     Flag = "AutoNextRoundToggle",
     Callback = function(Value) AutoNextRound = Value end,
-})
-
-FarmTab:CreateSlider({
-    Name = "Target Detection Range",
-    Range = {100, 5000},
-    Increment = 50,
-    Suffix = "studs",
-    CurrentValue = 5000,
-    Flag = "TargetDetectionRangeSlider",
-    Callback = function(Value) TargetDetectionRange = Value end,
 })
 
 FarmTab:CreateSection("Auto M1 & Skill Nuking")
@@ -766,7 +707,7 @@ task.spawn(function()
             end
 
             if AutoFarmDungeon then
-                -- Combined Target Selector: Range Check -> Global Enemy Fallback -> Nil
+                -- Map-Wide Target Selector (Respects Priority -> Returns Closest Anywhere on Map)
                 local target, targetType = getActiveTarget()
 
                 if target and not IsDodging then
@@ -819,7 +760,7 @@ task.spawn(function()
                         end
                     end
                 elseif AutoNextRound and not IsDodging then
-                    -- ONLY runs when NO target exists in 5,000 studs AND NO enemies exist anywhere in workspace.EnemyNpc
+                    -- ONLY runs when ZERO targets/enemies exist anywhere on the map
                     if tick() - LastRoomTPTime > 1.5 then
                         local locations = getProgressionLocations()
 
