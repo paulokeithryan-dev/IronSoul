@@ -69,7 +69,7 @@ local UltraLowVFXEnabled = false
 local OrbitAngle = 0
 
 ----------------------------------------------------
--- HELPER FUNCTIONS: ENEMY & TARGET DETECTION
+-- HELPER FUNCTIONS: TARGET DISCOVERY & DETECT
 ----------------------------------------------------
 
 local function isBoss(npc)
@@ -165,6 +165,7 @@ local function getTargetPart(target)
     return nil
 end
 
+-- Priority Evaluation (Boss -> Normal NPC -> Egg -> Chest sequence)
 local function getTargetByPriority()
     local bosses, normals = getEnemies()
     local eggs = getDragonEggs()
@@ -292,7 +293,7 @@ FarmTab:CreateToggle({
     Name = "Auto Skill [ R ]",
     CurrentValue = false,
     Flag = "AutoSkillRToggle",
-    Callback = function(Value) AutoSkillR = Value end,
+    Callback = function(Value) AutoSkillRToggle = Value end,
 })
 
 FarmTab:CreateToggle({
@@ -501,10 +502,10 @@ MiscTab:CreateToggle({
 })
 
 ----------------------------------------------------
--- ASYNCHRONOUS COMBAT LOOPS
+-- COMBAT LOOPS (M1 & SKILLS)
 ----------------------------------------------------
 
--- Auto M1 Loop (Method A with Delay Slider)
+-- Auto M1 Loop
 task.spawn(function()
     while true do
         if AutoM1 then
@@ -543,7 +544,6 @@ task.spawn(function()
                 end
             end
 
-            -- Switch weapon after completing the active skill sequence
             if usedAnySkill and AutoSwitchWeapon then
                 switchToNextWeapon()
                 task.wait(0.3)
@@ -554,12 +554,12 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------
--- MAIN AUTOFARM & POSITIONING LOOP
+-- MAIN AUTOFARM & LOCK-ON LOOP
 ----------------------------------------------------
 
 task.spawn(function()
     while true do
-        task.wait(0.03)
+        task.wait(0.02)
 
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -574,14 +574,14 @@ task.spawn(function()
                 end
             end
 
-            -- Main Target Processing
+            -- Priority Target Evaluation
             local target, targetType = getTargetByPriority()
 
             if target and not IsDodging then
                 local targetPart = getTargetPart(target)
 
                 if targetPart then
-                    -- Skill Dodge Check
+                    -- Skill Velocity Auto Dodge Check
                     if checkForIncomingSkill(target) then
                         IsDodging = true
                         task.spawn(function()
@@ -599,7 +599,7 @@ task.spawn(function()
                             IsDodging = false
                         end)
                     else
-                        -- Position Calculation
+                        -- Target Lock & Position Calculation
                         local hDist = (targetType == "Boss") and BossDistance or NormalDistance
                         local targetCFrame = targetPart.CFrame
                         local finalCFrame
@@ -620,7 +620,7 @@ task.spawn(function()
                     end
                 end
             elseif AutoNextRound and not target and not IsDodging then
-                -- Teleport to next round respawn if no active targets remain
+                -- Teleport to next round respawn point when room is clear
                 local respawnFolder = workspace:FindFirstChild("PlayerRespawn")
                 if respawnFolder then
                     local rounds = respawnFolder:GetChildren()
