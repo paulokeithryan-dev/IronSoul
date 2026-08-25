@@ -75,50 +75,25 @@ local LowVFXEnabled = false
 local UltraLowVFXEnabled = false
 
 ----------------------------------------------------
--- ADVANCED EGG INTERACTION & TWEEN EVENT BYPASS
+-- HELPER FUNCTIONS: EGG ANIMATION BYPASS & PROMPTS
 ----------------------------------------------------
 
--- Scans nil instances and runtime garbage collection to force-complete custom Framework Tweens
-local function bypassDragonEggTweenEvents()
-    -- 1. Scan getnilinstances for hidden signals/BindableEvents created by LocalDragonEgg
-    if getnilinstances then
-        for _, obj in ipairs(getnilinstances()) do
-            if obj:IsA("BindableEvent") and (obj.Name == "Event" or obj.Name == "_completed" or obj.Name == "_playbackStateChanged") then
-                pcall(function()
-                    obj:Fire(Enum.PlaybackState.Completed)
-                end)
-            end
-        end
-    end
-
-    -- 2. Scan GC for active ReplicatedStorage.Framework.Fundamental.Tween objects
-    if getgc then
-        for _, tableObj in ipairs(getgc(true)) do
-            if typeof(tableObj) == "table" then
-                -- Target custom tween objects controlling egg animations
-                if rawget(tableObj, "PlaybackState") ~= nil and rawget(tableObj, "_completed") ~= nil then
-                    rawset(tableObj, "PlaybackState", Enum.PlaybackState.Completed)
-                    
-                    local completedSignal = rawget(tableObj, "_completed")
-                    if typeof(completedSignal) == "Instance" and completedSignal:IsA("BindableEvent") then
-                        pcall(function() completedSignal:Fire(Enum.PlaybackState.Completed) end)
-                    elseif typeof(completedSignal) == "table" and type(completedSignal.Fire) == "function" then
-                        pcall(function() completedSignal:Fire(Enum.PlaybackState.Completed) end)
-                    end
-
-                    local callback = rawget(tableObj, "Callback")
-                    if type(callback) == "function" then
-                        pcall(callback, Enum.PlaybackState.Completed)
-                    end
+-- Dynamic Nil-Instance Tween Fast-Forwarder (Instant Egg Open Bypass)
+local function bypassEggAnimation()
+    if not getnilinstances then return end
+    
+    for _, object in ipairs(getnilinstances()) do
+        if object and (object.Name == "Event" or object.Name == "_completed" or object.Name == "PlaybackStateChanged") then
+            pcall(function()
+                if object:IsA("BindableEvent") then
+                    object:Fire(Enum.PlaybackState.Completed)
+                elseif typeof(object) == "RBXScriptSignal" or object.Fire then
+                    object:Fire(Enum.PlaybackState.Completed)
                 end
-            end
+            end)
         end
     end
 end
-
-----------------------------------------------------
--- HELPER FUNCTIONS: TARGET DISCOVERY & DETECT
-----------------------------------------------------
 
 local function getTargetPart(target)
     if not target then return nil end
@@ -333,20 +308,19 @@ local function checkForIncomingSkill(target)
     return false
 end
 
--- PROXIMITY PROMPT & EGG EVENT TRIGGER
+-- PROXIMITY PROMPT TRIGGER (FIRED WHEN CLOSE/ORBITING + INSTANT EGG BYPASS)
 local function handlePromptInteraction(target, targetType)
     if not target then return end
 
-    -- Execute standard proximity prompt if present
     local prompt = target:FindFirstChildOfClass("ProximityPrompt")
         or target:FindFirstChild("Interact_ProximityPrompt", true) 
         or target:FindFirstChildWhichIsA("ProximityPrompt", true)
 
     if prompt and prompt.Enabled then
+        prompt.HoldDuration = 0
         if fireproximityprompt then
             fireproximityprompt(prompt, 0)
         else
-            prompt.HoldDuration = 0
             prompt:InputHoldBegin()
             task.wait(0.01)
             prompt:InputHoldEnd()
@@ -356,9 +330,9 @@ local function handlePromptInteraction(target, targetType)
         end
     end
 
-    -- If target is a Dragon Egg, fire the custom nil tween event bypass instantly
+    -- Fast-Forward Egg Tween / Open Animation via nil instance signals
     if targetType == "Egg" then
-        bypassDragonEggTweenEvents()
+        bypassEggAnimation()
     end
 end
 
@@ -825,6 +799,7 @@ task.spawn(function()
             end
 
             if AutoFarmDungeon then
+                -- Combined Target Selector: Range Check -> Global Enemy Fallback -> Nil
                 local target, targetType = getActiveTarget()
 
                 if target and not IsDodging then
@@ -870,7 +845,7 @@ task.spawn(function()
                             hrp.AssemblyAngularVelocity = Vector3.zero
                             hrp.CFrame = finalCFrame
 
-                            -- Activate Egg / Chest Proximity Prompt & Fire Nil Tween Bypass
+                            -- Activate Proximity Prompt & Fast-Forward Egg Open Sequence
                             if targetType == "Egg" or targetType == "Chest" then
                                 handlePromptInteraction(target, targetType)
                             end
