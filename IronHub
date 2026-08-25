@@ -1,0 +1,606 @@
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Players = game:GetService("Players")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local Lighting = game:GetService("Lighting")
+local LocalPlayer = Players.LocalPlayer
+
+----------------------------------------------------
+-- WINDOW & CONFIGURATION (AUTO-SAVE ENABLED)
+----------------------------------------------------
+local Window = Rayfield:CreateWindow({
+    Name = "Dungeon Autofarm Hub",
+    LoadingTitle = "Dungeon Script",
+    LoadingSubtitle = "Auto Farm & Dodge Utility",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "DungeonFarmConfig",
+        FileName = "AutofarmSettings"
+    },
+    Discord = { Enabled = false }
+})
+
+local FarmTab = Window:CreateTab("Autofarm", 4483362458)
+local MiscTab = Window:CreateTab("Misc", 4483362458)
+
+----------------------------------------------------
+-- STATE VARIABLES & FLAGS
+----------------------------------------------------
+local AutoFarmDungeon = false
+local AutoDragonEgg = false
+local AutoTreasureChest = false
+local AutoNextRound = false
+local AutoM1 = false
+local AutoSkill = false
+
+local FarmPosition = "Above"
+local NormalDistance = 10
+local BossDistance = 15
+local VerticalDistance = 10
+
+local Priority = {
+    [1] = "Boss",
+    [2] = "Normal Enemy NPC",
+    [3] = "Dragon Egg",
+    [4] = "Treasure Chest"
+}
+
+local AutoDodge = false
+local AutoDodgeDistance = 25
+local VerticalDodgeDistance = 20
+local DodgeMode = "Up + Away"
+local DodgeWait = 1.5
+local IsDodging = false
+
+local InfZoomEnabled = false
+local AntiVoidEnabled = false
+local LowVFXEnabled = false
+local UltraLowVFXEnabled = false
+
+local OrbitAngle = 0
+
+----------------------------------------------------
+-- CONTROLLER HOOK ENGINE
+----------------------------------------------------
+
+local CachedController = nil
+
+local function getController()
+    if CachedController and type(CachedController) == "table" and rawget(CachedController, "SetInputDirection") then
+        return CachedController
+    end
+
+    if getgc then
+        for _, obj in ipairs(getgc(true)) do
+            if type(obj) == "table" and rawget(obj, "SetInputDirection") and rawget(obj, "HasBaseAttackStage") then
+                CachedController = obj
+                return obj
+            end
+        end
+    end
+    return nil
+end
+
+local function executeAction(actionName)
+    local controller = getController()
+    if controller then
+        if rawget(controller, "PerformAction") or controller.PerformAction then
+            pcall(function()
+                controller:PerformAction(actionName)
+            end)
+            return true
+        end
+    end
+
+    -- Fallback via direct Action Module execution
+    local char = LocalPlayer.Character
+    local actionScript = char and char:FindFirstChild("LocalControlMgr", true) and char.LocalControlMgr:FindFirstChild("Action") and char.LocalControlMgr.Action:FindFirstChild(actionName)
+    if actionScript and actionScript:IsA("ModuleScript") then
+        local success, mod = pcall(require, actionScript)
+        if success and type(mod) == "table" and mod.Perform then
+            pcall(function() mod.Perform(controller or {}) end)
+            return true
+        end
+    end
+    return false
+end
+
+----------------------------------------------------
+-- HELPER FUNCTIONS: ENEMY & TARGET DETECTION
+----------------------------------------------------
+
+local function isBoss(npc)
+    if not npc or not npc:FindFirstChild("HumanoidRootPart") then return false end
+    
+    local hrp = npc.HumanoidRootPart
+    local localEnemy = hrp:FindFirstChild("LocalEnemyNpc")
+    if localEnemy then
+        if localEnemy:IsA("ValueBase") and tostring(localEnemy.Value):lower():find("boss") then
+            return true
+        end
+    end
+
+    if npc.Name:lower():find("boss") then return true end
+
+    local hum = npc:FindFirstChildOfClass("Humanoid")
+    if hum and hum.MaxHealth > 5000 then return true end
+
+    return false
+end
+
+local function isAlive(model)
+    if not model or not model.Parent then return false end
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health > 0 then return true end
+    local hrp = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+    return hrp ~= nil
+end
+
+local function getEnemies()
+    local bosses, normals = {}, {}
+    local enemyFolder = workspace:FindFirstChild("EnemyNpc")
+    if enemyFolder then
+        for _, npc in ipairs(enemyFolder:GetChildren()) do
+            if isAlive(npc) then
+                if isBoss(npc) then
+                    table.insert(bosses, npc)
+                else
+                    table.insert(normals, npc)
+                end
+            end
+        end
+    end
+    return bosses, normals
+end
+
+local function getDragonEggs()
+    local eggs = {}
+    local f1 = workspace:FindFirstChild("DragonEgg")
+    local f2 = workspace:FindFirstChild("DragonEggs")
+    
+    local function collect(folder)
+        if folder then
+            if folder:IsA("Model") or folder:IsA("BasePart") then
+                table.insert(eggs, folder)
+            else
+                for _, obj in ipairs(folder:GetChildren()) do
+                    if isAlive(obj) or obj:IsA("BasePart") then
+                        table.insert(eggs, obj)
+                    end
+                end
+            end
+        end
+    end
+
+    collect(f1)
+    collect(f2)
+    return eggs
+end
+
+local function getTreasureChests()
+    local chests = {}
+    local tFolder = workspace:FindFirstChild("TreasureChests")
+    if tFolder then
+        for _, round in ipairs(tFolder:GetChildren()) do
+            for _, chest in ipairs(round:GetChildren()) do
+                if chest:IsA("Model") or chest:IsA("BasePart") then
+                    table.insert(chests, chest)
+                end
+            end
+        end
+    end
+    return chests
+end
+
+local function getTargetPart(target)
+    if not target then return nil end
+    if target:IsA("Model") then
+        return target.PrimaryPart or target:FindFirstChild("HumanoidRootPart") or target:FindFirstChildWhichIsA("BasePart", true)
+    elseif target:IsA("BasePart") then
+        return target
+    end
+    return nil
+end
+
+local function getTargetByPriority()
+    local bosses, normals = getEnemies()
+    local eggs = getDragonEggs()
+    local chests = getTreasureChests()
+
+    for i = 1, 4 do
+        local pType = Priority[i]
+        if pType == "Boss" and AutoFarmDungeon and #bosses > 0 then
+            return bosses[1], "Boss"
+        elseif pType == "Normal Enemy NPC" and AutoFarmDungeon and #normals > 0 then
+            return normals[1], "Normal"
+        elseif pType == "Dragon Egg" and AutoDragonEgg and #eggs > 0 then
+            return eggs[1], "Egg"
+        elseif pType == "Treasure Chest" and AutoTreasureChest and #chests > 0 then
+            return chests[1], "Chest"
+        end
+    end
+    return nil, nil
+end
+
+local function checkForIncomingSkill(target)
+    if not AutoDodge or not target then return false end
+    local hrp = target:FindFirstChild("HumanoidRootPart")
+    if hrp and hrp:FindFirstChild("SkillVelocity") then
+        return true
+    end
+    return false
+end
+
+----------------------------------------------------
+-- FARMING TAB UI LOGIC
+----------------------------------------------------
+
+FarmTab:CreateSection("Autofarm Toggles")
+
+FarmTab:CreateToggle({
+    Name = "Autofarm Dungeon",
+    CurrentValue = false,
+    Flag = "AutoFarmDungeonToggle",
+    Callback = function(Value) AutoFarmDungeon = Value end,
+})
+
+FarmTab:CreateToggle({
+    Name = "Auto Dragon Egg",
+    CurrentValue = false,
+    Flag = "AutoDragonEggToggle",
+    Callback = function(Value) AutoDragonEgg = Value end,
+})
+
+FarmTab:CreateToggle({
+    Name = "Auto Treasure Chest",
+    CurrentValue = false,
+    Flag = "AutoTreasureChestToggle",
+    Callback = function(Value) AutoTreasureChest = Value end,
+})
+
+FarmTab:CreateToggle({
+    Name = "Auto Next Round/Room",
+    CurrentValue = false,
+    Flag = "AutoNextRoundToggle",
+    Callback = function(Value) AutoNextRound = Value end,
+})
+
+FarmTab:CreateToggle({
+    Name = "Auto M1",
+    CurrentValue = false,
+    Flag = "AutoM1Toggle",
+    Callback = function(Value) 
+        AutoM1 = Value 
+        if not Value then
+            local controller = getController()
+            if controller then
+                controller.HoldingBaseAttack = false
+            end
+        end
+    end,
+})
+
+FarmTab:CreateToggle({
+    Name = "Auto Skill",
+    CurrentValue = false,
+    Flag = "AutoSkillToggle",
+    Callback = function(Value) AutoSkill = Value end,
+})
+
+FarmTab:CreateSection("Position & Distance Settings")
+
+FarmTab:CreateDropdown({
+    Name = "Farm Position",
+    Options = {"Orbit", "Above", "Under"},
+    CurrentOption = {"Above"},
+    MultipleOptions = false,
+    Flag = "FarmPositionDropdown",
+    Callback = function(Option)
+        FarmPosition = typeof(Option) == "table" and Option[1] or Option
+    end,
+})
+
+FarmTab:CreateSlider({
+    Name = "Distance",
+    Range = {1, 50},
+    Increment = 1,
+    Suffix = "studs",
+    CurrentValue = 10,
+    Flag = "NormalDistanceSlider",
+    Callback = function(Value) NormalDistance = Value end,
+})
+
+FarmTab:CreateSlider({
+    Name = "Boss Distance",
+    Range = {1, 100},
+    Increment = 1,
+    Suffix = "studs",
+    CurrentValue = 15,
+    Flag = "BossDistanceSlider",
+    Callback = function(Value) BossDistance = Value end,
+})
+
+FarmTab:CreateSlider({
+    Name = "Vertical Distance",
+    Range = {-50, 50},
+    Increment = 1,
+    Suffix = "studs",
+    CurrentValue = 10,
+    Flag = "VerticalDistanceSlider",
+    Callback = function(Value) VerticalDistance = Value end,
+})
+
+FarmTab:CreateSection("Priority Sequence")
+
+local priorityOptions = {"Boss", "Normal Enemy NPC", "Dragon Egg", "Treasure Chest"}
+
+FarmTab:CreateDropdown({
+    Name = "1st Priority",
+    Options = priorityOptions,
+    CurrentOption = {"Boss"},
+    MultipleOptions = false,
+    Flag = "Priority1Dropdown",
+    Callback = function(Opt) Priority[1] = typeof(Opt) == "table" and Opt[1] or Opt end,
+})
+
+FarmTab:CreateDropdown({
+    Name = "2nd Priority",
+    Options = priorityOptions,
+    CurrentOption = {"Normal Enemy NPC"},
+    MultipleOptions = false,
+    Flag = "Priority2Dropdown",
+    Callback = function(Opt) Priority[2] = typeof(Opt) == "table" and Opt[1] or Opt end,
+})
+
+FarmTab:CreateDropdown({
+    Name = "3rd Priority",
+    Options = priorityOptions,
+    CurrentOption = {"Dragon Egg"},
+    MultipleOptions = false,
+    Flag = "Priority3Dropdown",
+    Callback = function(Opt) Priority[3] = typeof(Opt) == "table" and Opt[1] or Opt end,
+})
+
+FarmTab:CreateDropdown({
+    Name = "4th Priority",
+    Options = priorityOptions,
+    CurrentOption = {"Treasure Chest"},
+    MultipleOptions = false,
+    Flag = "Priority4Dropdown",
+    Callback = function(Opt) Priority[4] = typeof(Opt) == "table" and Opt[1] or Opt end,
+})
+
+FarmTab:CreateSection("Auto Dodge Settings")
+
+FarmTab:CreateToggle({
+    Name = "Auto Dodge",
+    CurrentValue = false,
+    Flag = "AutoDodgeToggle",
+    Callback = function(Value) AutoDodge = Value end,
+})
+
+FarmTab:CreateDropdown({
+    Name = "Dodge Mode",
+    Options = {"Up", "Away", "Up + Away"},
+    CurrentOption = {"Up + Away"},
+    MultipleOptions = false,
+    Flag = "DodgeModeDropdown",
+    Callback = function(Option)
+        DodgeMode = typeof(Option) == "table" and Option[1] or Option
+    end,
+})
+
+FarmTab:CreateSlider({
+    Name = "Auto Dodge Distance",
+    Range = {5, 100},
+    Increment = 1,
+    Suffix = "studs",
+    CurrentValue = 25,
+    Flag = "AutoDodgeDistanceSlider",
+    Callback = function(Value) AutoDodgeDistance = Value end,
+})
+
+FarmTab:CreateSlider({
+    Name = "Vertical Dodge Distance",
+    Range = {5, 100},
+    Increment = 1,
+    Suffix = "studs",
+    CurrentValue = 20,
+    Flag = "VerticalDodgeDistanceSlider",
+    Callback = function(Value) VerticalDodgeDistance = Value end,
+})
+
+FarmTab:CreateSlider({
+    Name = "Dodge Wait",
+    Range = {0.1, 5},
+    Increment = 0.1,
+    Suffix = "sec",
+    CurrentValue = 1.5,
+    Flag = "DodgeWaitSlider",
+    Callback = function(Value) DodgeWait = Value end,
+})
+
+----------------------------------------------------
+-- MISC TAB UI LOGIC
+----------------------------------------------------
+
+MiscTab:CreateSection("Graphics & Performance")
+
+MiscTab:CreateToggle({
+    Name = "Low VFX",
+    CurrentValue = false,
+    Flag = "LowVFXToggle",
+    Callback = function(Value)
+        LowVFXEnabled = Value
+        for _, v in ipairs(workspace:GetDescendants()) do
+            if v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") then
+                v.Enabled = not Value
+            end
+        end
+    end,
+})
+
+MiscTab:CreateToggle({
+    Name = "Ultra Low VFX",
+    CurrentValue = false,
+    Flag = "UltraLowVFXToggle",
+    Callback = function(Value)
+        UltraLowVFXEnabled = Value
+        if Value then
+            settings().Rendering.QualityLevel = 1
+            Lighting.GlobalShadows = false
+            Lighting.FogEnd = 9e9
+        else
+            settings().Rendering.QualityLevel = 5
+            Lighting.GlobalShadows = true
+        end
+    end,
+})
+
+MiscTab:CreateSection("Player Utilities")
+
+MiscTab:CreateToggle({
+    Name = "Inf Zoom Out",
+    CurrentValue = false,
+    Flag = "InfZoomToggle",
+    Callback = function(Value)
+        InfZoomEnabled = Value
+        LocalPlayer.CameraMaxZoomDistance = Value and 100000 or 128
+    end,
+})
+
+MiscTab:CreateToggle({
+    Name = "Anti Void",
+    CurrentValue = false,
+    Flag = "AntiVoidToggle",
+    Callback = function(Value)
+        AntiVoidEnabled = Value
+    end,
+})
+
+----------------------------------------------------
+-- AUTO M1 & AUTO SKILL LOOPS
+----------------------------------------------------
+
+-- Auto M1 Loop
+task.spawn(function()
+    while true do
+        task.wait(0.1)
+        if AutoM1 then
+            local target = getTargetByPriority()
+            if target then
+                local controller = getController()
+                if controller then
+                    controller.HoldingBaseAttack = true
+                end
+                local success = executeAction("BaseAttack")
+                if not success then
+                    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+                    task.wait(0.02)
+                    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+                end
+            end
+        end
+    end
+end)
+
+-- Auto Skill Loop
+task.spawn(function()
+    local skills = {"Skill1", "Skill2", "SkillAW", "SkillU"}
+    while true do
+        task.wait(0.2)
+        if AutoSkill then
+            local target = getTargetByPriority()
+            if target then
+                for _, skillName in ipairs(skills) do
+                    if not AutoSkill then break end
+                    executeAction(skillName)
+                    task.wait(0.15)
+                end
+            end
+        end
+    end
+end)
+
+----------------------------------------------------
+-- MAIN AUTOFARM LOOP
+----------------------------------------------------
+
+task.spawn(function()
+    while true do
+        task.wait(0.03)
+
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+        if hrp then
+            -- Anti Void Protection
+            if AntiVoidEnabled then
+                local voidHeight = (workspace.FallenPartsDestroyHeight or -500) + 50
+                if hrp.Position.Y < voidHeight then
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+                    hrp.CFrame = hrp.CFrame + Vector3.new(0, 200, 0)
+                end
+            end
+
+            -- Main Target Processing
+            local target, targetType = getTargetByPriority()
+
+            if target and not IsDodging then
+                local targetPart = getTargetPart(target)
+
+                if targetPart then
+                    -- Skill Dodge Check
+                    if checkForIncomingSkill(target) then
+                        IsDodging = true
+                        task.spawn(function()
+                            local dodgeOffset = Vector3.zero
+                            if DodgeMode == "Up" then
+                                dodgeOffset = Vector3.new(0, VerticalDodgeDistance, 0)
+                            elseif DodgeMode == "Away" then
+                                dodgeOffset = (hrp.CFrame.LookVector * -AutoDodgeDistance)
+                            elseif DodgeMode == "Up + Away" then
+                                dodgeOffset = (hrp.CFrame.LookVector * -AutoDodgeDistance) + Vector3.new(0, VerticalDodgeDistance, 0)
+                            end
+
+                            hrp.CFrame = hrp.CFrame + dodgeOffset
+                            task.wait(DodgeWait)
+                            IsDodging = false
+                        end)
+                    else
+                        -- Position Calculation
+                        local hDist = (targetType == "Boss") and BossDistance or NormalDistance
+                        local targetCFrame = targetPart.CFrame
+                        local finalCFrame
+
+                        if FarmPosition == "Orbit" then
+                            OrbitAngle = (OrbitAngle + 3) % 360
+                            local rad = math.rad(OrbitAngle)
+                            local offset = Vector3.new(math.cos(rad) * hDist, VerticalDistance, math.sin(rad) * hDist)
+                            finalCFrame = CFrame.new(targetCFrame.Position + offset, targetCFrame.Position)
+                        elseif FarmPosition == "Above" then
+                            finalCFrame = CFrame.new(targetCFrame.Position + Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
+                        elseif FarmPosition == "Under" then
+                            finalCFrame = CFrame.new(targetCFrame.Position - Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
+                        end
+
+                        hrp.AssemblyLinearVelocity = Vector3.zero
+                        hrp.CFrame = finalCFrame
+                    end
+                end
+            elseif AutoNextRound and not target and not IsDodging then
+                -- Teleport to next round respawn if no active targets remain
+                local respawnFolder = workspace:FindFirstChild("PlayerRespawn")
+                if respawnFolder then
+                    local rounds = respawnFolder:GetChildren()
+                    if #rounds > 0 then
+                        local latestRound = rounds[#rounds]
+                        local spawnPart = latestRound:IsA("BasePart") and latestRound or latestRound:FindFirstChildWhichIsA("BasePart", true)
+                        if spawnPart then
+                            hrp.CFrame = spawnPart.CFrame * CFrame.new(0, 3, 0)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
