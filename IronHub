@@ -30,11 +30,10 @@ local AutoDragonEgg = false
 local AutoTreasureChest = false
 local AutoNextRound = false
 
--- ROUND PROGRESSION & RANGE
-local CurrentRound = 1
-local MaxRounds = 9
+-- PROGRESSION & RANGE
 local TargetDetectionRange = 5000
-local LastRoundTPTime = 0
+local CurrentLocationIndex = 1
+local LastRoomTPTime = 0
 
 -- COMBAT & SKILL STATES
 local AutoM1 = false
@@ -47,7 +46,7 @@ local AutoSkillC = false
 local AutoSwitchWeapon = false
 
 -- POSITION & DISTANCE
-local FarmPosition = "Above"
+local FarmPosition = "Orbit"
 local NormalDistance = 10
 local BossDistance = 15
 local VerticalDistance = 10
@@ -185,7 +184,7 @@ local function getTreasureChests()
     return chests
 end
 
--- PRIORITY LOCK-ON WITHIN DETECTION RANGE
+-- PRIORITY LOCK-ON WITHIN DETECTION RANGE (5,000 STUDS DEFAULT)
 local function getTargetByPriority()
     if not AutoFarmDungeon then 
         return nil, nil 
@@ -247,18 +246,22 @@ local function checkForIncomingSkill(target)
     return false
 end
 
--- INSTANT PROXIMITY PROMPT TRIGGER (EGGS & CHESTS)
+-- PROXIMITY PROMPT TRIGGER (FIRED WHEN CLOSE/ORBITING)
 local function handlePromptInteraction(target)
     if not target then return end
 
-    local prompt = target:FindFirstChild("Interact_ProximityPrompt", true) 
+    local prompt = target:FindFirstChildOfClass("ProximityPrompt")
+        or target:FindFirstChild("Interact_ProximityPrompt", true) 
         or target:FindFirstChildWhichIsA("ProximityPrompt", true)
 
     if prompt and prompt.Enabled then
-        prompt.HoldDuration = 0
         if fireproximityprompt then
             fireproximityprompt(prompt, 0)
         else
+            prompt.HoldDuration = 0
+            prompt:InputHoldBegin()
+            task.wait(0.01)
+            prompt:InputHoldEnd()
             VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
             task.wait(0.01)
             VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
@@ -267,54 +270,52 @@ local function handlePromptInteraction(target)
 end
 
 ----------------------------------------------------
--- HELPER FUNCTIONS: ROUND PROGRESSION & SPAWNS
+-- HELPER FUNCTIONS: PROGRESSION & BACKUP PORTALS
 ----------------------------------------------------
 
-local function getRoundSpawnPart(roundNum)
+local function getProgressionLocations()
+    local locations = {}
+
+    -- 1. Standard Round Spawns (PlayerRespawn.Round1 - Round9)
     local pRespawn = workspace:FindFirstChild("PlayerRespawn")
     if pRespawn then
-        local roundObj = pRespawn:FindFirstChild("Round" .. tostring(roundNum))
-        if roundObj then
-            return roundObj:IsA("BasePart") and roundObj or roundObj:FindFirstChildWhichIsA("BasePart", true)
+        for i = 1, 9 do
+            local roundObj = pRespawn:FindFirstChild("Round" .. tostring(i))
+            if roundObj then
+                local part = roundObj:IsA("BasePart") and roundObj or roundObj:FindFirstChildWhichIsA("BasePart", true)
+                if part then table.insert(locations, part) end
+            end
         end
     end
-    return nil
-end
 
-local function hasTargetsNearSpawn(spawnPart, maxDist)
-    if not spawnPart then return false end
-    local spawnPos = spawnPart.Position
-    
-    local bosses, normals = getEnemies()
-    for _, mob in ipairs(bosses) do
-        local p = getTargetPart(mob)
-        if p and (p.Position - spawnPos).Magnitude <= maxDist then
-            return true
+    -- 2. Backup Doors: workspace.RoundDoor:GetChildren()
+    local roundDoor = workspace:FindFirstChild("RoundDoor")
+    if roundDoor then
+        for _, child in ipairs(roundDoor:GetChildren()) do
+            if child.Name ~= "Portal" then
+                local root = child:FindFirstChild("Root") or (child:IsA("BasePart") and child)
+                if root then
+                    table.insert(locations, root)
+                end
+            end
         end
-    end
-    for _, mob in ipairs(normals) do
-        local p = getTargetPart(mob)
-        if p and (p.Position - spawnPos).Magnitude <= maxDist then
-            return true
-        end
-    end
-    if AutoDragonEgg then
-        for _, egg in ipairs(getDragonEggs()) do
-            local p = getTargetPart(egg)
-            if p and (p.Position - spawnPos).Magnitude <= maxDist then
-                return true
+
+        -- 3. Final Backup Portals: workspace.RoundDoor.Portal.Root.Safe
+        local portal = roundDoor:FindFirstChild("Portal")
+        if portal then
+            local portalRoot = portal:FindFirstChild("Root")
+            if portalRoot then
+                local safePart = portalRoot:FindFirstChild("Safe") or (portalRoot:IsA("BasePart") and portalRoot)
+                if safePart then
+                    table.insert(locations, safePart)
+                else
+                    table.insert(locations, portalRoot)
+                end
             end
         end
     end
-    if AutoTreasureChest then
-        for _, chest in ipairs(getTreasureChests()) do
-            local p = getTargetPart(chest)
-            if p and (p.Position - spawnPos).Magnitude <= maxDist then
-                return true
-            end
-        end
-    end
-    return false
+
+    return locations
 end
 
 ----------------------------------------------------
@@ -372,7 +373,7 @@ FarmTab:CreateToggle({
 FarmTab:CreateSection("Target Detection & Round Progression")
 
 FarmTab:CreateToggle({
-    Name = "Auto Next Round/Room",
+    Name = "Auto Next Room/Round",
     CurrentValue = false,
     Flag = "AutoNextRoundToggle",
     Callback = function(Value) AutoNextRound = Value end,
@@ -388,7 +389,7 @@ FarmTab:CreateSlider({
     Callback = function(Value) TargetDetectionRange = Value end,
 })
 
-FarmTab:CreateSection("Auto M1 Combat")
+FarmTab:CreateSection("Auto M1 & Skill Nuking")
 
 FarmTab:CreateToggle({
     Name = "Auto M1",
@@ -406,8 +407,6 @@ FarmTab:CreateSlider({
     Flag = "AutoM1DelaySlider",
     Callback = function(Value) AutoM1Delay = Value end,
 })
-
-FarmTab:CreateSection("Auto Skill & Weapon Switch")
 
 FarmTab:CreateToggle({
     Name = "Auto Skill [ Q ]",
@@ -449,7 +448,7 @@ FarmTab:CreateSection("Position & Distance Settings")
 FarmTab:CreateDropdown({
     Name = "Farm Position",
     Options = {"Orbit", "Above", "Under"},
-    CurrentOption = {"Above"},
+    CurrentOption = {"Orbit"},
     MultipleOptions = false,
     Flag = "FarmPositionDropdown",
     Callback = function(Option)
@@ -646,15 +645,15 @@ MiscTab:CreateToggle({
 })
 
 ----------------------------------------------------
--- COMBAT LOOPS (M1 & SKILLS Q, E, R, C)
+-- COMBAT LOOPS (M1 & SKILLS NUKING ALL TARGET TYPES)
 ----------------------------------------------------
 
--- Auto M1 Loop
+-- Auto M1 Loop (Nukes Bosses, Normals, Eggs & Chests)
 task.spawn(function()
     while true do
         if AutoFarmDungeon and AutoM1 then
             local target, targetType = getTargetByPriority()
-            if target and not IsDodging and (targetType == "Boss" or targetType == "Normal") then
+            if target and not IsDodging then
                 VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
                 task.wait(0.01)
                 VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
@@ -669,7 +668,7 @@ task.spawn(function()
     while true do
         if AutoFarmDungeon then
             local target, targetType = getTargetByPriority()
-            if target and not IsDodging and (targetType == "Boss" or targetType == "Normal") then
+            if target and not IsDodging then
                 local skillsToCast = {
                     {Key = Enum.KeyCode.Q, Enabled = AutoSkillQ},
                     {Key = Enum.KeyCode.E, Enabled = AutoSkillE},
@@ -700,7 +699,7 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------
--- MAIN AUTOFARM, LOCK-ON & ROUND PROGRESSION LOOP
+-- MAIN AUTOFARM, LOCK-ON & BACKUP PROGRESSION LOOP
 ----------------------------------------------------
 
 task.spawn(function()
@@ -721,20 +720,31 @@ task.spawn(function()
                 end
             end
 
-            -- Priority Lock-on & Sequential Room Progression
             if AutoFarmDungeon then
+                -- Target Search (Scans 5000 studs range across entire workspace)
                 local target, targetType = getTargetByPriority()
 
                 if target and not IsDodging then
                     local targetPart = getTargetPart(target)
 
                     if targetPart then
-                        -- Instant Prompt Interactions for Eggs and Chests
-                        if targetType == "Egg" or targetType == "Chest" then
-                            handlePromptInteraction(target)
+                        -- 1. Orbit & Position locking to target
+                        local hDist = (targetType == "Boss") and BossDistance or NormalDistance
+                        local targetCFrame = targetPart.CFrame
+                        local finalCFrame
+
+                        if FarmPosition == "Orbit" then
+                            OrbitAngle = (OrbitAngle + OrbitSpeed) % 360
+                            local rad = math.rad(OrbitAngle)
+                            local offset = Vector3.new(math.cos(rad) * hDist, VerticalDistance, math.sin(rad) * hDist)
+                            finalCFrame = CFrame.new(targetCFrame.Position + offset, targetCFrame.Position)
+                        elseif FarmPosition == "Above" then
+                            finalCFrame = CFrame.new(targetCFrame.Position + Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
+                        elseif FarmPosition == "Under" then
+                            finalCFrame = CFrame.new(targetCFrame.Position - Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
                         end
 
-                        -- Skill Velocity Auto Dodge Check
+                        -- Instant Dodge check
                         if checkForIncomingSkill(target) then
                             IsDodging = true
                             task.spawn(function()
@@ -752,56 +762,31 @@ task.spawn(function()
                                 IsDodging = false
                             end)
                         else
-                            -- Target Lock & Position Calculation for ALL Target Types (Mobs, Eggs, Chests)
-                            local hDist = (targetType == "Boss") and BossDistance or NormalDistance
-                            local targetCFrame = targetPart.CFrame
-                            local finalCFrame
-
-                            if FarmPosition == "Orbit" then
-                                OrbitAngle = (OrbitAngle + OrbitSpeed) % 360
-                                local rad = math.rad(OrbitAngle)
-                                local offset = Vector3.new(math.cos(rad) * hDist, VerticalDistance, math.sin(rad) * hDist)
-                                finalCFrame = CFrame.new(targetCFrame.Position + offset, targetCFrame.Position)
-                            elseif FarmPosition == "Above" then
-                                finalCFrame = CFrame.new(targetCFrame.Position + Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
-                            elseif FarmPosition == "Under" then
-                                finalCFrame = CFrame.new(targetCFrame.Position - Vector3.new(0, VerticalDistance + hDist, 0), targetCFrame.Position)
-                            end
-
+                            -- Apply movement
                             hrp.AssemblyLinearVelocity = Vector3.zero
                             hrp.AssemblyAngularVelocity = Vector3.zero
                             hrp.CFrame = finalCFrame
+
+                            -- 2. Activate Egg / Chest Proximity Prompt while orbiting/nuking
+                            if targetType == "Egg" or targetType == "Chest" then
+                                handlePromptInteraction(target)
+                            end
                         end
                     end
                 elseif AutoNextRound and not IsDodging then
-                    -- Round Progression Check (Round1 -> Round9) when NO targets are within range
-                    local currentSpawn = getRoundSpawnPart(CurrentRound)
-                    
-                    if not currentSpawn or not hasTargetsNearSpawn(currentSpawn, TargetDetectionRange) then
-                        if tick() - LastRoundTPTime > 1.5 then
-                            local nextRoundFound = false
+                    -- ONLY runs when NO targets are detected within range
+                    if tick() - LastRoomTPTime > 1.5 then
+                        local locations = getProgressionLocations()
 
-                            for r = 1, MaxRounds do
-                                local checkRound = ((CurrentRound + r - 1) % MaxRounds) + 1
-                                local spawnCandidate = getRoundSpawnPart(checkRound)
-                                
-                                if spawnCandidate and hasTargetsNearSpawn(spawnCandidate, TargetDetectionRange) then
-                                    CurrentRound = checkRound
-                                    nextRoundFound = true
-                                    break
-                                end
-                            end
+                        if #locations > 0 then
+                            CurrentLocationIndex = (CurrentLocationIndex % #locations) + 1
+                            local targetLocation = locations[CurrentLocationIndex]
 
-                            if not nextRoundFound then
-                                CurrentRound = (CurrentRound % MaxRounds) + 1
-                            end
-
-                            local nextSpawnPart = getRoundSpawnPart(CurrentRound)
-                            if nextSpawnPart then
+                            if targetLocation then
                                 hrp.AssemblyLinearVelocity = Vector3.zero
                                 hrp.AssemblyAngularVelocity = Vector3.zero
-                                hrp.CFrame = nextSpawnPart.CFrame * CFrame.new(0, 3, 0)
-                                LastRoundTPTime = tick()
+                                hrp.CFrame = targetLocation.CFrame * CFrame.new(0, 3, 0)
+                                LastRoomTPTime = tick()
                             end
                         end
                     end
